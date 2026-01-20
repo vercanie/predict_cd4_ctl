@@ -1,5 +1,5 @@
 # Analysis of scRNAseq data from T cells in the PREDICT study
-![Summary of the paper](./pics/predict_workflow.jpg) 
+![Summary of the paper](./Fig1.png) 
 
 This repository contains an analysis of the single-cell RNA sequencing of gut biopsies and PBMC samples from children with Crohn's disease (CD), ulcerative colitis (UC), 
 disorders of gut-brain interaction (DGBI) and healthy donors within the PREDICT study. The manuscript is in development, please see our previous publications:
