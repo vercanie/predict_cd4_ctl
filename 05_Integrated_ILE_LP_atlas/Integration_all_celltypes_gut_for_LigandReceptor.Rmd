@@ -1,0 +1,3085 @@
+---
+title: "integration_ile_lp"
+output: html_document
+date: "2025-05-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+packageVersion("Seurat")
+library(dplyr)
+library(tidyverse)
+library(SeuratObject)
+library(Matrix)
+```
+
+# Load and prepare datasets
+
+```{r}
+ile_5p <- readRDS("PREDICT/ligand_receptor/seu5p_ile_lp_filt.rds")
+ile_3p <- readRDS("PREDICT/ligand_receptor/paper_final.rds")
+thomas_ile <- readRDS("PREDICT/ligand_receptor/thomas_merged_Ileum.rds")
+
+
+ile_5p$source <- "PREDICT 5p"
+ile_3p$source <- "PREDICT 3p"
+thomas_ile$source <- "Thomas"
+
+
+gut_all_cells  <- merge(ile_5p, c(ile_3p, thomas_ile))
+
+rm(ile_5p)
+rm(ile_3p)
+rm(thomas_ile)
+
+gut_all_cells  <- JoinLayers(gut_all_cells)
+gut_all_cells  <- SplitObject(gut_all_cells, split.by = "source")
+
+# normalize and identify variable features for each dataset independently
+gut_all_cells <- lapply(X = gut_all_cells, FUN = function(x) {
+    DefaultAssay(x)  <- "RNA"
+    x$barcode  <- colnames(x)
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 1200)
+})
+
+library(STACAS)
+gut_all_cells <- Run.STACAS(gut_all_cells, dims = 1:20)
+gut_all_cells <- RunUMAP(gut_all_cells, dims = 1:20) 
+DimPlot(gut_all_cells)
+saveRDS(gut_all_cells, "PREDICT/ligand_receptor/gut_all_cells_thomas_3p_5p_integrated.rds")
+
+
+
+```
+
+```{r}
+gut_all_cells <- readRDS("../PREDICT/ligand_receptor/gut_all_cells_thomas_3p_5p_integrated.rds")
+```
+
+```{r fig.width = 12, fig.height = 6}
+DimPlot(gut_all_cells, group.by = "cell_type_lvl1", label = T)
+DimPlot(gut_all_cells, group.by = "source", label = F)
+
+```
+
+```{r fig.width = 12}
+DimPlot(gut_all_cells, group.by = "major", label = T)
+
+```
+
+```{r}
+gut_all_cells@meta.data %>% colnames
+
+
+DimPlot(gut_all_cells, group.by = "combinedMajorTypes", label = T)
+gut_all_cells$combinedMajorTypes
+
+FeaturePlot(gut_all_cells, features = "MKI67", min.cutoff = 0)
+```
+
+```{r}
+DimPlot(gut_all_cells, group.by = "combinedMajorTypes", label = T)
+gut_all_cells$combinedMajorTypes
+
+FeaturePlot(gut_all_cells, features = "MKI67", min.cutoff = 0)
+```
+
+```{r}
+gut_all_cells <- FindNeighbors(gut_all_cells)
+gut_all_cells <- FindClusters(gut_all_cells, res = c(0.1,0.2,0.5,0.8))
+
+```
+
+```{r}
+DimPlot(gut_all_cells, group.by = "integrated_snn_res.0.1", label = T)
+DimPlot(gut_all_cells, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_all_cells, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_all_cells, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+gut_all_cells@meta.data <- gut_all_cells@meta.data %>% mutate(annotations_coarse = recode_factor(integrated_snn_res.0.2,
+                                                                                                 "0" = "T cells",
+                                                                                                 "1" = "B cells",
+                                                                                                 "2" = "Plasma cells",
+                                                                                                 "3" = "Epithelial cells",
+                                                                                                 "4" = "T cells",
+                                                                                                 "5" = "Enterocytes",
+                                                                                                 "6" = "Myeloid cells",
+                                                                                                 "7" = "Stromal cells",
+                                                                                                 "8" = "Endothelia",
+                                                                                                 "9" = "Epithelial cells",
+                                                                                                 "10" = "Mast cells",
+                                                                                                 "11" = "Stromal cells",
+                                                                                                 "12" = "Proliferating",
+                                                                                                 "13" = "Stromal cells"
+                                                                                                 ))
+
+
+DimPlot(gut_all_cells, group.by = "annotations_coarse")
+```
+
+```{r}
+gut_all_cells@meta.data %>% group_by(annotations_coarse, cell_type_lvl1) %>% tally() %>% arrange(desc(n))
+```
+
+```{r}
+df2 <- gut_all_cells@meta.data %>% 
+  dplyr::filter(!is.na(combinedMajorTypes)) %>% 
+  group_by(combinedMajorTypes, annotations_coarse) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+
+
+g2 <- ggplot(df2, aes(x = annotations_coarse, y = combinedMajorTypes )) + 
+  geom_point(aes(size = freq*100, colour = freq*100)) + 
+  theme_bw() 
+
+g2 + scale_size_continuous(range=c(7,12)) +
+  geom_text(aes(label = round(freq*100, digits = 1))) + 
+  scale_colour_gradient2(low = "lightskyblue", mid = "lightsteelblue2", high = "salmon", midpoint = 2) +
+  theme_bw()
+
+```
+
+```{r fig.height = 7}
+df2 <- gut_all_cells@meta.data %>% 
+  dplyr::filter(!is.na(cell_type_lvl1)) %>% 
+  group_by(cell_type_lvl1, annotations_coarse) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+
+
+g2 <- ggplot(df2, aes(x = annotations_coarse, y = cell_type_lvl1 )) + 
+  geom_point(aes(size = freq*100, colour = freq*100)) + 
+  theme_bw() 
+
+g2 + scale_size_continuous(range=c(7,12)) +
+  geom_text(aes(label = round(freq*100, digits = 1))) + 
+  scale_colour_gradient2(low = "lightskyblue", mid = "lightsteelblue2", high = "salmon", midpoint = 2) +
+  theme_bw()
+```
+
+```{r fig.height = 10, fig.width = 10}
+df2 <- gut_all_cells@meta.data %>% 
+  dplyr::filter(!is.na(major)) %>% 
+  group_by(major, annotations_coarse) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+
+
+g2 <- ggplot(df2, aes(x = annotations_coarse, y = major )) + 
+  geom_point(aes(size = freq*100, colour = freq*100)) + 
+  theme_bw() 
+
+g2 + scale_size_continuous(range=c(7,12)) +
+  geom_text(aes(label = round(freq*100, digits = 1))) + 
+  scale_colour_gradient2(low = "lightskyblue", mid = "lightsteelblue2", high = "salmon", midpoint = 2) +
+  theme_bw()
+```
+
+# Reclustering major cell types
+
+```{r}
+celltypes <- levels(factor(gut_all_cells$annotations_coarse))
+celltypes
+
+
+
+for(i in 1:10){
+  gut_sub <- subset(gut_all_cells, annotations_coarse == celltypes[i])
+  gut_sub  <- SplitObject(gut_sub, split.by = "source")
+
+# normalize and identify variable features for each dataset independently
+gut_sub <- lapply(X = gut_sub, FUN = function(x) {
+    DefaultAssay(x)  <- "RNA"
+    x$barcode  <- colnames(x)
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 1200)
+})
+
+gut_sub <- Run.STACAS(gut_sub, dims = 1:20)
+gut_sub <- RunUMAP(gut_sub, dims = 1:20) 
+DimPlot(gut_sub)
+gut_sub <- FindNeighbors(gut_sub)
+gut_sub <- FindClusters(gut_sub, res = c(0.2,0.5,0.8))
+
+saveRDS(gut_sub, paste0("PREDICT/ligand_receptor/gut_sub_",i,".rds"))
+  
+}
+
+
+
+```
+
+## T cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_1.rds")
+
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl2")
+DimPlot(gut_sub, group.by = "minor")
+DimPlot(gut_sub, group.by = "curatedname")
+
+reduced_annot  <- function(seurat_object, tier_name, n_cells_to_other){
+    md  <- seurat_object@meta.data
+    tier_name_red  <- paste0(tier_name,"_red")
+    cell_types_keep  <- (md  %>% group_by_at(tier_name)  %>% tally()  %>% arrange(desc(n)) %>% dplyr::filter(n > n_cells_to_other))[[tier_name]]
+    md[[tier_name_red]]  <- if_else(md[[tier_name]] %in% cell_types_keep,as.character(md[[tier_name]]),"Other")
+    seurat_object  <- AddMetaData(seurat_object, metadata = md[[tier_name_red]], tier_name_red)
+    return(seurat_object)
+}
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+
+
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = T)
+```
+
+```{r}
+FeaturePlot(gut_sub, features = "FOXP3", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "CD8A", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "CD4", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "CCR6", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "IL26", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "MKI67", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "EOMES", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "RORC", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "MS4A1", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "KLRK1", min.cutoff = 0)
+
+FeaturePlot(gut_sub, features = "KLRG1", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "ITGAE", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "CX3CR1", min.cutoff = 0)
+
+FeaturePlot(gut_sub, features = "CXCR3", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "TCF7", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "ZNF683", min.cutoff = 0)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+
+
+```
+
+```{r}
+df2 <- gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(combinedMajorTypes)) %>% 
+  group_by(combinedMajorTypes, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+
+
+g2 <- ggplot(df2, aes(x = integrated_snn_res.0.2, y = combinedMajorTypes )) + 
+  geom_point(aes(size = freq*100, colour = freq*100)) + 
+  theme_bw() 
+
+g2 + scale_size_continuous(range=c(7,12)) +
+  geom_text(aes(label = round(freq*100, digits = 1))) + 
+  scale_colour_gradient2(low = "lightskyblue", mid = "lightsteelblue2", high = "salmon", midpoint = 2) +
+  theme_bw()
+
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(curatedname)) %>% 
+  group_by(curatedname, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(minor)) %>% 
+  group_by(minor, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "CD4+ T cells",
+                                                              integrated_snn_res.0.2 == "1"  & integrated_snn_res.0.8 == "0" ~ "CD4+ T cells" ,
+                                                              integrated_snn_res.0.2 == "1"  & integrated_snn_res.0.8 == "11" ~ "CD8+ T cells" ,
+                                                              integrated_snn_res.0.2 == "1"  & !(integrated_snn_res.0.8 %in% c(0,11)) ~ "CD4+ T cells" ,
+                                                              integrated_snn_res.0.2 == "2" ~ "CD4+ T cells",
+                                                              integrated_snn_res.0.2 == "3" ~ "CD8+ T cells",
+                                                              integrated_snn_res.0.2 == "4" ~ "CD4+ T cells",
+                                                              integrated_snn_res.0.2 == "5" ~ "CD8+ T cells",
+                                                              integrated_snn_res.0.2 == "6" ~ "NK cells",
+                                                              integrated_snn_res.0.2 == "7" ~ "ILC",
+                                                              integrated_snn_res.0.2 == "8" ~ "CD4+ T cells")) %>% 
+  mutate(annotations_fine = case_when(integrated_snn_res.0.8 == "10" ~ "CD8+ T cells",
+                                                              integrated_snn_res.0.8 == "14" ~ "CD4+ T cells",
+                                                              integrated_snn_res.0.8 == "13" ~ "CD8+ T cells",
+                                      TRUE ~ annotations_coarse
+                                                              ))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "CD4 Th17",
+                                                              integrated_snn_res.0.2 == "1"  & integrated_snn_res.0.8 == "0" ~ "CD4 Naive" ,
+                                                              integrated_snn_res.0.2 == "1"  & integrated_snn_res.0.8 == "11" ~ "CD8 Naive" ,
+                                                              integrated_snn_res.0.2 == "1"  & !(integrated_snn_res.0.8 %in% c(0,11)) ~ "CD4 Naive" ,
+                                                              integrated_snn_res.0.2 == "2" ~ "CD4 Tcm",
+                                                              integrated_snn_res.0.2 == "3" ~ "CD8 Memory",
+                                                              integrated_snn_res.0.2 == "4" ~ "CD4 Treg",
+                                                              integrated_snn_res.0.2 == "5" ~ "CD8 Tmk",
+                                                              integrated_snn_res.0.2 == "6" ~ "NK cells",
+                                                              integrated_snn_res.0.2 == "7" ~ "ILC",
+                                                              integrated_snn_res.0.2 == "8" ~ "Proliferating")) %>% 
+  mutate(annotations_fine = case_when(integrated_snn_res.0.8 == "10" ~ "CD8 Tcm",
+                                                              integrated_snn_res.0.8 == "14" ~ "CD4 CTL",
+                                                              integrated_snn_res.0.8 == "13" ~ "CD8 MAIT",
+                                      TRUE ~ annotations_fine
+                                                              ))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+saveRDS(gut_sub, "ligand_receptor/gut_sub_1.rds")
+```
+
+```{r}
+md_all_annotations <- gut_sub@meta.data
+```
+
+## B cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_2.rds")
+
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl2")
+DimPlot(gut_sub, group.by = "minor")
+DimPlot(gut_sub, group.by = "curatedname")
+
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+
+
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = T)
+
+
+
+```
+
+```{r}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.5
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+
+#FeaturePlot(gut_sub, features = markers1[1:15])
+```
+
+```{r}
+mrk
+```
+
+```{r fig.width=7, fig.height=8}
+DotPlot(gut_sub, features = unique(markers1)) + coord_flip()
+
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = "CD3D", min.cutoff = 0)
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = "BCL6", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "AICDA", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "RGS13", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "IGHM", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "IGHD", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "TBX21", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "ZEB2", min.cutoff = 0)
+
+FeaturePlot(gut_sub, features = "CR2", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "CD27", min.cutoff = 0)
+```
+
+```{r}
+DefaultAssay(gut_sub) <- "RNA"
+FeaturePlot(gut_sub, features = "IGHG", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "IGHA", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "IFI44", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "MKI67", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "TNFRSF13B", min.cutoff = 0)
+FeaturePlot(gut_sub, features = "ISG15", min.cutoff = 0)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+```
+
+```{r}
+df2 <- gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(combinedMajorTypes)) %>% 
+  group_by(combinedMajorTypes, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+
+
+g2 <- ggplot(df2, aes(x = integrated_snn_res.0.2, y = combinedMajorTypes )) + 
+  geom_point(aes(size = freq*100, colour = freq*100)) + 
+  theme_bw() 
+
+g2 + scale_size_continuous(range=c(7,12)) +
+  geom_text(aes(label = round(freq*100, digits = 1))) + 
+  scale_colour_gradient2(low = "lightskyblue", mid = "lightsteelblue2", high = "salmon", midpoint = 2) +
+  theme_bw()
+
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(curatedname)) %>% 
+  group_by(curatedname, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(minor)) %>% 
+  group_by(minor, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Memory",
+                                                              integrated_snn_res.0.2 == "1" ~ "Naive",
+                                                              integrated_snn_res.0.2 == "2" ~ "GC-like",
+                                                              integrated_snn_res.0.2 == "3" ~ "Memory",
+                                                              integrated_snn_res.0.2 == "4" ~ "Naive",
+                                                              integrated_snn_res.0.2 == "5" ~ "Memory",
+                                                              integrated_snn_res.0.2 == "6" ~ "Memory"))
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.5 == "0" ~ "Naive",
+                                                              integrated_snn_res.0.5 == "1" ~ "Memory",
+                                                              integrated_snn_res.0.5 == "2" ~ "Memory",
+                                                              integrated_snn_res.0.5 == "3" ~ "Memory Early activated",
+                                                              integrated_snn_res.0.5 == "4" ~ "Naive",
+                                                              integrated_snn_res.0.5 == "5" ~ "Naive IFN",
+                                                              integrated_snn_res.0.5 == "6" ~ "GC-like",
+                                                              integrated_snn_res.0.5 == "7" ~ "CD21low Memory",
+                                                              integrated_snn_res.0.5 == "8" ~ "Doublets",
+                                                              integrated_snn_res.0.5 == "9" ~ "Early plasmablasts",
+                                                              integrated_snn_res.0.5 == "10" ~ "Doublets"))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+
+```
+
+```{r}
+saveRDS(gut_sub, "ligand_receptor/gut_sub_2.rds")
+```
+
+```{r}
+
+md_all_annotations_filt2 <- md_all_annotations_filt %>% dplyr::filter(annotations_main != "B cells")
+
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "B cells"
+
+md_all_annotations_filt2 <- rbind(md_all_annotations_filt2, md_filt)
+
+md_all_annotations_filt2
+
+```
+
+## Plasma cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_3.rds")
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl2")
+DimPlot(gut_sub, group.by = "minor")
+DimPlot(gut_sub, group.by = "curatedname")
+```
+
+```{r fig.width=10, fig.height=6}
+reduced_annot  <- function(seurat_object, tier_name, n_cells_to_other){
+    md  <- seurat_object@meta.data
+    tier_name_red  <- paste0(tier_name,"_red")
+    cell_types_keep  <- (md  %>% group_by_at(tier_name)  %>% tally()  %>% arrange(desc(n)) %>% dplyr::filter(n > n_cells_to_other))[[tier_name]]
+    md[[tier_name_red]]  <- if_else(md[[tier_name]] %in% cell_types_keep,as.character(md[[tier_name]]),"Other")
+    seurat_object  <- AddMetaData(seurat_object, metadata = md[[tier_name_red]], tier_name_red)
+    return(seurat_object)
+}
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+```
+
+```{r fig.width=10, fig.height=6}
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = F)
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+mrk <- FindAllMarkers(gut_sub)
+
+mrk %>% dplyr::filter(cluster == 5)
+```
+
+```{r}
+markers2  <- mrk %>% group_by(cluster) %>% slice_head(n = 10) %>% pull(gene) %>% unique()
+
+markers2
+
+avgexp = AverageExpression(gut_sub, features = markers2, group.by = "integrated_snn_res.0.2",
+                          assay = "RNA")
+
+options(repr.plot.width = 15, repr.plot.height = 5)
+pheatmap::pheatmap(t(avgexp$RNA), main = "", 
+         scale = "column", cluster_cols = T, cluster_rows = T,
+        color=colorRampPalette(c("dodgerblue", "grey95", "indianred2"))(50), 
+         border_color = "white",
+                  fontsize = 9)
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("IGHA1","IGHG2", "IGHG3","IGHG4","CD38","SDC1"), ncol = 3, min.cutoff = 0)
+FeaturePlot(gut_sub, features = c("CD19","MS4A1", "LCK","TRAC","EPCAM","KRT9"), ncol = 3, min.cutoff = 0)
+FeaturePlot(gut_sub, features = c("CD27","CD38", "IRF4","XBP1","BLIMP1","MKI67"), ncol = 3, min.cutoff = 0)
+
+```
+
+```{r}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+
+#FeaturePlot(gut_sub, features = markers1[1:15])
+```
+
+```{r}
+mrk
+```
+
+```{r fig.width=7, fig.height=8}
+DotPlot(gut_sub, features = unique(markers1)) + coord_flip()
+
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2")
+```
+
+```{r}
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(minor)) %>% 
+  group_by(minor, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "PC IgA",
+                                                              integrated_snn_res.0.2 == "1" ~ "PC IgA",
+                                                              integrated_snn_res.0.2 == "3" ~ "PC IgA",
+                                                              integrated_snn_res.0.2 == "2" ~ "PC IgG",
+                                                              integrated_snn_res.0.2 == "4" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "5" ~ "Doublets"))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "PC IgA",
+                                                              integrated_snn_res.0.2 == "1" ~ "PC IgA",
+                                                              integrated_snn_res.0.2 == "3" ~ "PC IgA",
+                                                              integrated_snn_res.0.2 == "2" ~ "PC IgG",
+                                                              integrated_snn_res.0.2 == "4" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "5" ~ "Doublets"))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+saveRDS(gut_sub, "ligand_receptor/gut_sub_3.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Plasma cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+## Epithelial cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_4.rds")
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl2")
+DimPlot(gut_sub, group.by = "minor")
+DimPlot(gut_sub, group.by = "curatedname")
+```
+
+```{r fig.width=10, fig.height=6}
+reduced_annot  <- function(seurat_object, tier_name, n_cells_to_other){
+    md  <- seurat_object@meta.data
+    tier_name_red  <- paste0(tier_name,"_red")
+    cell_types_keep  <- (md  %>% group_by_at(tier_name)  %>% tally()  %>% arrange(desc(n)) %>% dplyr::filter(n > n_cells_to_other))[[tier_name]]
+    md[[tier_name_red]]  <- if_else(md[[tier_name]] %in% cell_types_keep,as.character(md[[tier_name]]),"Other")
+    seurat_object  <- AddMetaData(seurat_object, metadata = md[[tier_name_red]], tier_name_red)
+    return(seurat_object)
+}
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+```
+
+```{r fig.width=10, fig.height=6}
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = F)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("BEST4","OTOP2","SPIB", "GP2"))
+FeaturePlot(gut_sub, features = c("KRT20", "EPCAM", "MAFB","KRT19"))
+
+```
+
+```{r}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+
+#FeaturePlot(gut_sub, features = markers1[1:15])
+```
+
+```{r}
+mrk
+```
+
+```{r fig.width=7, fig.height=8}
+DotPlot(gut_sub, features = unique(markers1)) + coord_flip()
+
+
+```
+
+```{r}
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2")
+```
+
+```{r}
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(minor)) %>% 
+  group_by(minor, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Epithelial",
+                                                              integrated_snn_res.0.2 == "1" ~ "Epithelial",
+                                                              integrated_snn_res.0.2 == "2" ~ "Epithelial",
+                                                              integrated_snn_res.0.2 == "3" ~ "Goblet cells",
+                                                              integrated_snn_res.0.2 == "4" ~ "Epithelial",
+                                                              integrated_snn_res.0.2 == "5" ~ "Paneth cells",
+                                                              integrated_snn_res.0.2 == "6" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "7" ~ "Enteroendocrine cells",
+                                                              integrated_snn_res.0.2 == "8" ~ "Tuft cells",
+                                                              integrated_snn_res.0.2 == "9" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "10" ~ "Epithelial"
+                                                              
+                                                              ))
+
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Regenerative epithelium",
+                                                              integrated_snn_res.0.2 == "1" ~ "Cycling epithelial progenitors",
+                                                              integrated_snn_res.0.2 == "2" ~ "Intestinal stem cells",
+                                                              integrated_snn_res.0.2 == "3" ~ "Goblet cells",
+                                                              integrated_snn_res.0.2 == "4" ~ "Epithelial SELENOP+",
+                                                              integrated_snn_res.0.2 == "5" ~ "Paneth cells",
+                                                              integrated_snn_res.0.2 == "6" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "7" ~ "Enteroendocrine cells",
+                                                              integrated_snn_res.0.2 == "8" ~ "Tuft cells",
+                                                              integrated_snn_res.0.2 == "9" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "10" ~ "Epithelial BEST4+"
+                                                              
+                                                              ))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+
+saveRDS(gut_sub, "PREDICT/gut_sub_4.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Epithelial cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+## Enterocytes
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_5.rds")
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl2")
+DimPlot(gut_sub, group.by = "minor")
+DimPlot(gut_sub, group.by = "curatedname")
+```
+
+```{r fig.width=10, fig.height=6}
+reduced_annot  <- function(seurat_object, tier_name, n_cells_to_other){
+    md  <- seurat_object@meta.data
+    tier_name_red  <- paste0(tier_name,"_red")
+    cell_types_keep  <- (md  %>% group_by_at(tier_name)  %>% tally()  %>% arrange(desc(n)) %>% dplyr::filter(n > n_cells_to_other))[[tier_name]]
+    md[[tier_name_red]]  <- if_else(md[[tier_name]] %in% cell_types_keep,as.character(md[[tier_name]]),"Other")
+    seurat_object  <- AddMetaData(seurat_object, metadata = md[[tier_name_red]], tier_name_red)
+    return(seurat_object)
+}
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+```
+
+```{r fig.width=10, fig.height=6}
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = F)
+```
+
+```{r fig.width=20, fig.height=10}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+FeaturePlot(gut_sub, features = markers1[1:15])
+```
+
+```{r fig.width=20, fig.height=10}
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 5) %>% pull(gene)
+```
+
+```{r fig.width=10, fig.height=14}
+DotPlot(gut_sub, features = markers) + coord_flip()
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("KRT19","EPCAM","ELF3","CCL25"))
+FeaturePlot(gut_sub, features = c("FABP4","ALDOB","ANPEP","PRAP1"))
+FeaturePlot(gut_sub, features = c("GUCA2A","APOA1","APOA3","APOB"))
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("TMPRSS15","OTOP3","LCT","ADA"))
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("BEST4","OTOP2","KLK15","SPIB"))
+FeaturePlot(gut_sub, features = c("NOS2","DUOX2","LCN2","PLAC8"))
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("IL1B","CCL2","CXCL8","TNFAIP3"))
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2")
+```
+
+```{r}
+
+gut_sub@meta.data %>% 
+  dplyr::filter(!is.na(minor)) %>% 
+  group_by(minor, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% 
+  arrange(integrated_snn_res.0.2) %>% 
+  ungroup %>% 
+  group_by(integrated_snn_res.0.2) %>% 
+  slice_max(order_by = n, n = 5)
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Enterocytes",
+                                                              integrated_snn_res.0.2 == "1" ~ "Inflammatory Enterocytes",
+                                                              integrated_snn_res.0.2 == "2" ~ "Enterocytes",
+                                                              integrated_snn_res.0.2 == "3" ~ "Inflammatory Enterocytes",
+                                                              integrated_snn_res.0.2 == "4" ~ "Enterocytes",
+                                                              integrated_snn_res.0.2 == "5" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "6" ~ "Inflammatory Enterocytes" ))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Transitional Enterocytes",
+                                                              integrated_snn_res.0.2 == "1" ~ "Transitional Enterocytes",
+                                                              integrated_snn_res.0.2 == "2" ~ "Homeostatic Enterocytes",
+                                                              integrated_snn_res.0.2 == "3" ~ "Inflammatory Enterocytes",
+                                                              integrated_snn_res.0.2 == "4" ~ "Homeostatic Enterocytes",
+                                                              integrated_snn_res.0.2 == "5" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "6" ~ "Inflammatory Enterocytes" ))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Enterocytes"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+```{r}
+saveRDS(gut_sub, "PREDICT/gut_sub_5.rds")
+```
+
+## Myeloid cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_6.rds")
+
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl1")
+DimPlot(gut_sub, group.by = "major")
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2")
+DimPlot(gut_sub, group.by = "minor")
+DimPlot(gut_sub, group.by = "curatedname")
+```
+
+```{r}
+
+```
+
+```{r fig.width=10, fig.height=6}
+reduced_annot  <- function(seurat_object, tier_name, n_cells_to_other){
+    md  <- seurat_object@meta.data
+    tier_name_red  <- paste0(tier_name,"_red")
+    cell_types_keep  <- (md  %>% group_by_at(tier_name)  %>% tally()  %>% arrange(desc(n)) %>% dplyr::filter(n > n_cells_to_other))[[tier_name]]
+    md[[tier_name_red]]  <- if_else(md[[tier_name]] %in% cell_types_keep,as.character(md[[tier_name]]),"Other")
+    seurat_object  <- AddMetaData(seurat_object, metadata = md[[tier_name_red]], tier_name_red)
+    return(seurat_object)
+}
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+```
+
+```{r fig.width=10, fig.height=6}
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = F)
+```
+
+```{r fig.width=20, fig.height=10}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.5
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+FeaturePlot(gut_sub, features = markers1[1:15])
+```
+
+```{r fig.width=20, fig.height=10}
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 5) %>% pull(gene)
+```
+
+```{r fig.width=10, fig.height=14}
+DotPlot(gut_sub, features = unique(markers)) + coord_flip()
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("IL27"), min.cutoff = 0)
+FeaturePlot(gut_sub, features = c("FABP4","ALDOB","ANPEP","PRAP1"))
+FeaturePlot(gut_sub, features = c("GUCA2A","APOA1","APOA3","APOB"))
+```
+
+```{r fig.width=8, fig.height=10}
+DotPlot(gut_sub, features = unique(c("CD14", "FCN1", "LYST", "AREG", "PLAUR",# Monocytes
+                              "NRG1", "KLF4", "GPR183", "C1QB", "CCL3L3", "MS4A6A", "MS4A7", "CXCL2",# MQ
+                              "C1QA", "C1QB", "C1QC", "SELENOP", # Tissue resident Mq
+                              "CD209", "CD163L1", "FOLR2", "MRC1",# M2
+                              "TNF,CLL2,CLL3", "IL1B", # M1
+                              "CCR7", "CCL22", "LAMP3", "IDO1", "ITGAX", "CD207", "FSCN1", # DC
+                              "CLEC9A", "C1orf54", "XCR1", "DNASE1L3", "SHTN1", # cDC1
+                              "CD1C", "TCTN3", "FCER1A", "CLEC10A", "SPI1", "SIRPA", # cDC2
+                              "LILRA4", "PLD4", "IL3RA", "CLIC3", "CLEC4C" # cDC2
+                              ))) + coord_flip() + scale_colour_gradient2(low = "dodgerblue", mid = "white", high = "indianred2")
+
+
+```
+
+```{r}
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.5 == "0" ~ "Monocytes",
+                                                              integrated_snn_res.0.5 == "1" ~ "Macrophages",
+                                                              integrated_snn_res.0.5 == "2" ~ "DC",
+                                                              integrated_snn_res.0.5 == "3" ~ "Monocytes",
+                                                              integrated_snn_res.0.5 == "4" ~ "Macrophages",
+                                                              integrated_snn_res.0.5 == "5" & integrated_snn_res.0.8 == "14" ~ "Doublets",
+                                                              integrated_snn_res.0.5 == "5" & integrated_snn_res.0.8 != "14" ~ "Proliferating myeloid",
+                                                              integrated_snn_res.0.5 == "6" ~ "Macrophages",
+                                                              integrated_snn_res.0.5 == "7" ~ "DC",
+                                                              integrated_snn_res.0.5 == "8" ~ "DC",
+                                                              integrated_snn_res.0.5 == "9" ~ "DC",
+                                                              integrated_snn_res.0.5 == "10" ~ "DC",
+                                                              integrated_snn_res.0.5 == "11" ~ "Proliferating myeloid",
+                                                              integrated_snn_res.0.5 == "12" ~ "Monocytes",
+                                                              integrated_snn_res.0.5 == "13" ~ "Monocytes",
+                                                              integrated_snn_res.0.5 == "14" ~ "DC",
+                                                              integrated_snn_res.0.5 == "15" ~ "Macrophages",
+                                                              integrated_snn_res.0.5 == "16" ~ "Doublets" ))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.5 == "0" ~ "Homeostatic monocytes",
+                                                              integrated_snn_res.0.5 == "1" ~ "Inflammatory MQ",
+                                                              integrated_snn_res.0.5 == "2" ~ "cDC2",
+                                                              integrated_snn_res.0.5 == "3" ~ "Inflammatory monocytes",
+                                                              integrated_snn_res.0.5 == "4" ~ "IFN-activated MQ",
+                                                              integrated_snn_res.0.5 == "5" & integrated_snn_res.0.8 == "14" ~ "Doublets",
+                                                              integrated_snn_res.0.5 == "5" & integrated_snn_res.0.8 != "14" ~ "Proliferating myeloid",
+                                                              integrated_snn_res.0.5 == "6" ~ "Post-inflammatory MQ",
+                                                              integrated_snn_res.0.5 == "7" ~ "cDC1",
+                                                              integrated_snn_res.0.5 == "8" ~ "migDC",
+                                                              integrated_snn_res.0.5 == "9" ~ "Inflammatory migDC",
+                                                              integrated_snn_res.0.5 == "10" ~ "pDC",
+                                                              integrated_snn_res.0.5 == "11" ~ "Proliferating myeloid",
+                                                              integrated_snn_res.0.5 == "12" ~ "Activated chemokine-producing monocytes",
+                                                              integrated_snn_res.0.5 == "13" ~ "Inflammatory monocytes",
+                                                              integrated_snn_res.0.5 == "14" ~ "cDC1",
+                                                              integrated_snn_res.0.5 == "15" ~ "Post-inflammatory MQ",
+                                                              integrated_snn_res.0.5 == "16" ~ "Doublets" ))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("IL1B", "TNF", "NLRP3", "CXCL9", "CXCL10", 
+                          "CD80", "CD86", "INHBA", "ISG15", 
+                          "IFIT1", "IFIT3", "STAT1"))
+FeaturePlot(gut_sub, features = c("NOS2","DUOX2","LCN2","PLAC8"))
+
+```
+
+```{r}
+saveRDS(gut_sub, "PREDICT/gut_sub_6.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Myeloid cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+## Stromal cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_7.rds")
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl1", label = T)
+DimPlot(gut_sub, group.by = "major", label = T)
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2", label = T, repel = T)
+DimPlot(gut_sub, group.by = "minor", label = T, repel = T)
+DimPlot(gut_sub, group.by = "curatedname")
+```
+
+```{r fig.width=10, fig.height=6}
+reduced_annot  <- function(seurat_object, tier_name, n_cells_to_other){
+    md  <- seurat_object@meta.data
+    tier_name_red  <- paste0(tier_name,"_red")
+    cell_types_keep  <- (md  %>% group_by_at(tier_name)  %>% tally()  %>% arrange(desc(n)) %>% dplyr::filter(n > n_cells_to_other))[[tier_name]]
+    md[[tier_name_red]]  <- if_else(md[[tier_name]] %in% cell_types_keep,as.character(md[[tier_name]]),"Other")
+    seurat_object  <- AddMetaData(seurat_object, metadata = md[[tier_name_red]], tier_name_red)
+    return(seurat_object)
+}
+
+
+gut_sub <- reduced_annot(gut_sub, "cell_type_lvl2", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "minor", n_cells_to_other = 100)
+gut_sub <- reduced_annot(gut_sub, "curatedname", n_cells_to_other = 100)
+```
+
+```{r fig.width=10, fig.height=6}
+DimPlot(gut_sub, group.by = "cell_type_lvl2_red", label = T)
+DimPlot(gut_sub, group.by = "minor_red", label = T)
+DimPlot(gut_sub, group.by = "curatedname_red", label = F)
+```
+
+```{r fig.width=20, fig.height=10}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+
+FeaturePlot(gut_sub, features = markers1[1:15])
+```
+
+```{r fig.width=10, fig.height=14}
+DotPlot(gut_sub, features = unique(markers)) + coord_flip()
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("IL6"), min.cutoff = 0)
+FeaturePlot(gut_sub, features = c("CXCL1","CXCL12","TNFSF14","ICAM1"))
+FeaturePlot(gut_sub, features = c("GUCA2A","APOA1","APOA3","APOB"))
+```
+
+```{r}
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "1" ~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "2" ~ "Glia",
+                                                              integrated_snn_res.0.2 == "3" ~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "4" ~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "5"~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "6" ~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "7" ~ "Fibroblasts",
+                                                              integrated_snn_res.0.2 == "8" ~ "Pericytes",
+                                                              integrated_snn_res.0.2 == "9" ~ "Pericytes",
+                                                              integrated_snn_res.0.2 == "10" ~ "Fibroblasts"))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Homeostatic Fibroblasts",
+                                                              integrated_snn_res.0.2 == "1" ~ "Epithelial-associated Fibroblasts",
+                                                              integrated_snn_res.0.2 == "2" ~ "Glia",
+                                                              integrated_snn_res.0.2 == "3" ~ "Inflammatory Fibroblasts LP",
+                                                              integrated_snn_res.0.2 == "4" ~ "Inflammatory Fibroblasts LP",
+                                                              integrated_snn_res.0.2 == "5"~ "Homeostatic Fibroblasts",
+                                                              integrated_snn_res.0.2 == "6" ~ "Stromal organizer cells",
+                                                              integrated_snn_res.0.2 == "7" ~ "Myofibroblasts",
+                                                              integrated_snn_res.0.2 == "8" ~ "Inflammatory pericytes",
+                                                              integrated_snn_res.0.2 == "9" ~ "Homeostatic pericytes",
+                                                              integrated_snn_res.0.2 == "10" ~ "Doublets"))
+
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+saveRDS(gut_sub, "PREDICT/ligand_receptor/gut_sub_7.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Stromal cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+## Endothelial cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_8.rds")
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl1", label = T)
+DimPlot(gut_sub, group.by = "major", label = T)
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2", label = T, repel = T)
+DimPlot(gut_sub, group.by = "minor", label = T, repel = T)
+DimPlot(gut_sub, group.by = "curatedname")
+
+```
+
+```{r fig.width=20, fig.height=10}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+markers <- mrk %>% group_by(cluster) %>% 
+  dplyr::filter(avg_log2FC > 0) %>% 
+  slice_head(n = 2) %>% pull(gene)
+
+FeaturePlot(gut_sub, features = markers1[1:15])
+
+mrk
+```
+
+```{r}
+mrk
+```
+
+```{r}
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Blood endothelia",
+                                                              integrated_snn_res.0.2 == "1" ~ "Blood endothelia",
+                                                              integrated_snn_res.0.2 == "2" ~ "Pericyte-like endothelia",
+                                                              integrated_snn_res.0.2 == "3" ~ "Lymphatic endothelia",
+                                                              integrated_snn_res.0.2 == "4" ~ "Blood endothelia",
+                                                              integrated_snn_res.0.2 == "5"~ "Blood venous endothelia",
+                                                              integrated_snn_res.0.2 == "6" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "7" ~ "Blood endothelia"))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Venous endothelia",
+                                                              integrated_snn_res.0.2 == "1" ~ "Capillary endothelia",
+                                                              integrated_snn_res.0.2 == "2" ~ "Pericyte-like endothelia",
+                                                              integrated_snn_res.0.2 == "3" ~ "Lymphatic endothelia",
+                                                              integrated_snn_res.0.2 == "4" ~ "Arterial endothelia",
+                                                              integrated_snn_res.0.2 == "5"~ "HEV-like venous endothelia",
+                                                              integrated_snn_res.0.2 == "6" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "7" ~ "Proliferating endothelia"))
+
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+saveRDS(gut_sub, "ligand_receptor/gut_sub_8.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Endothelial cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+## Mast cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_9.rds")
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl1", label = T)
+DimPlot(gut_sub, group.by = "major", label = T)
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2", label = T, repel = T)
+DimPlot(gut_sub, group.by = "minor", label = T, repel = T)
+DimPlot(gut_sub, group.by = "curatedname")
+
+```
+
+```{r}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+
+mrk %>% dplyr::filter(cluster == 4)
+```
+
+```{r}
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "1" ~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "2" ~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "3" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "4" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "5"~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "6" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "7" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "8" ~ "Doublets"))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "1" ~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "2" ~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "3" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "4" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "5"~ "Mast cells",
+                                                              integrated_snn_res.0.2 == "6" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "7" ~ "Doublets",
+                                                              integrated_snn_res.0.2 == "8" ~ "Doublets"))
+
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+saveRDS(gut_sub, "ligand_receptor/gut_sub_9.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Mast cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+## Proliferating cells
+
+```{r}
+gut_sub <- readRDS("ligand_receptor/gut_sub_10.rds")
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.5", label = T)
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.8", label = T)
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "cell_type_lvl1", label = T)
+DimPlot(gut_sub, group.by = "major", label = T)
+
+DimPlot(gut_sub, group.by = "cell_type_lvl2", label = T, repel = T)
+DimPlot(gut_sub, group.by = "minor", label = T, repel = T)
+DimPlot(gut_sub, group.by = "curatedname")
+
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("CD3D", "MKI67","MS4A1","TRAC"), min.cutoff = 0)
+```
+
+```{r}
+FeaturePlot(gut_sub, features = c("SDC1", "CD27","IGHA1","IGHG4"), min.cutoff = 0)
+FeaturePlot(gut_sub, features = c("CSF2", "IL26","GZMA","CD4"), min.cutoff = 0)
+
+```
+
+```{r}
+Idents(gut_sub) <- gut_sub$integrated_snn_res.0.2
+
+
+mrk <- FindAllMarkers(gut_sub, logfc.threshold = log(2))
+
+markers1 <- mrk %>% mutate(diff.pct = pct.1-pct.2) %>% 
+  group_by(cluster) %>% 
+  slice_max(order_by = diff.pct, n = 5) %>% pull(gene)
+
+
+markers1
+
+mrk %>% dplyr::filter(cluster == 5)
+```
+
+```{r fig.width=6, fig.height=8}
+DefaultAssay(gut_sub) <- "RNA"
+DotPlot(gut_sub, features = unique(markers)) + coord_flip()
+
+```
+
+```{r}
+DimPlot(gut_sub, group.by = "integrated_snn_res.0.2", label = T)
+
+```
+
+```{r}
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_coarse = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "1" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "2" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "3" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "4" ~ "Proliferating T cells",
+                                                              integrated_snn_res.0.2 == "5"~ "Proliferating B cells"))
+
+
+DimPlot(gut_sub, group.by = "annotations_coarse", label = T)
+
+gut_sub@meta.data <- gut_sub@meta.data %>% mutate(annotations_fine = 
+                                                    case_when(integrated_snn_res.0.2 == "0" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "1" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "2" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "3" ~ "Proliferating B cells",
+                                                              integrated_snn_res.0.2 == "4" ~ "Proliferating T cells",
+                                                              integrated_snn_res.0.2 == "5"~ "Proliferating B cells"))
+
+
+DimPlot(gut_sub, group.by = "annotations_fine", label = T)
+```
+
+```{r}
+saveRDS(gut_sub, "ligand_receptor/gut_sub_10.rds")
+```
+
+```{r}
+
+md_filt <- gut_sub@meta.data %>% dplyr::select(barcode, annotations_fine, annotations_coarse)
+md_filt$annotations_main <- "Proliferating cells"
+
+md_all_annotations_filt <- rbind(md_all_annotations_filt, md_filt)
+
+```
+
+```{r}
+md_all_annotations_filt %>% group_by(annotations_main, annotations_coarse, annotations_fine) %>% tally()
+
+md_all_annotations_filt
+
+```
+
+```{r}
+write.csv(md_all_annotations_filt, "ligand_receptor/md_all_annotations_filt.csv")
+```
+
+# New annotations
+
+```{r}
+gut_all_cells$annotations_main <- NULL
+gut_all_cells$annotations_coarse <- NULL
+gut_all_cells$annotations_fine <- NULL
+
+gut_all_cells$barcode %in% md_all_annotations_filt$barcode %>% table
+
+gut_all_cells$is_in_annot <- gut_all_cells$barcode %in% md_all_annotations_filt$barcode
+```
+
+```{r}
+gut_all_cells@meta.data %>% group_by(is_in_annot, celltype) %>% tally
+
+gut_all_cells@meta.data %>% group_by(is_in_annot, source) %>% tally
+
+gut_all_cells$annotations_coarse <- NULL
+
+md <- gut_all_cells@meta.data %>% left_join(md_all_annotations_filt)
+
+md$annotations_coarse %>% table
+
+rownames(md) <- colnames(gut_all_cells)
+
+gut_all_cells@meta.data <- md
+
+
+DimPlot(gut_all_cells, group.by = "annotations_main")
+```
+
+```{r}
+DimPlot(gut_all_cells, group.by = "annotations_coarse")
+
+```
+
+```{r}
+DimPlot(gut_all_cells, group.by = "annotations_fine")
+
+```
+
+```{r}
+gut_all_cells$keep <- TRUE
+gut_all_cells@meta.data <- gut_all_cells@meta.data %>% 
+  mutate(keep = ifelse(annotations_fine == "Doublets" | annotations_coarse == "Doublets" , FALSE, TRUE))
+
+gut_all_cells$keep %>% table
+```
+
+```{r}
+gut_all_cells_filt <- subset(gut_all_cells, keep == TRUE)
+
+
+DimPlot(gut_all_cells_filt)
+
+DimPlot(gut_all_cells_filt, group.by = "annotations_main")
+```
+
+```{r}
+gut_all_cells_filt <- RunUMAP(gut_all_cells_filt, dims = 1:15) 
+gut_all_cells_filt@meta.data <- gut_all_cells_filt@meta.data %>% mutate(annotations_main = ifelse(annotations_main == "Enterocytes", "Epithelial cells", annotations_main))
+saveRDS(gut_all_cells_filt, "ligand_receptor/gut_all_cells_thomas_3p_5p_integrated_filt.rds")
+```
+
+```{r}
+write.csv(gut_all_cells_filt@meta.data, "ligand_receptor/gut_all_cells_filt_meta.data.csv")
+```
+
+```{r}
+DimPlot(gut_all_cells_filt)
+```
+
+```{r}
+cd4_ctl <- colnames(gut_all_cells_filt)[which(gut_all_cells_filt$annotations_fine == "CD4 CTL")]
+DimPlot(gut_all_cells_filt, cells.highlight = cd4_ctl, shuffle = T)
+
+```
+
+```{r fig.width=10, fig.height=4}
+DimPlot(gut_all_cells_filt, group.by = "source", split.by = "source")
+```
+
+```{r}
+gut_all_cells_filt@meta.data <- gut_all_cells_filt@meta.data  %>%
+mutate(annotations_coarse = case_when(
+    annotations_fine == "CD21low Memory" ~ "Memory B cells",
+    annotations_fine == "Early plasmablasts" ~ "Memory B cells",
+    annotations_fine == "GC-like" ~ "GC-like B cells",
+    annotations_fine == "Memory" ~ "Memory B cells",
+    annotations_fine == "Memory Early activated" ~ "Memory B cells",
+    annotations_fine == "Naive" ~ "Naive B cells",
+    annotations_fine == "Naive IFN" ~ "Naive B cells",
+    
+    annotations_fine == "HEV-like venous endothelia" ~ "Blood venous endothelia",
+    
+    annotations_fine == "CD8 Tcm" ~ "CD8+ T cells",
+    annotations_fine == "CD8 MAIT" ~ "CD8+ T cells",
+    annotations_fine == "CD4 CTL" ~ "CD4+ T cells",
+    TRUE ~ annotations_coarse
+        
+))  
+```
+
+```{r}
+DimPlot(gut_all_cells_filt, group.by = "annotations_main", raster.dpi = c(600,600))
+ggsave("ligand_receptor/dimplot_annotations_main.png", width = 24, height = 21)
+```
+
+```{r}
+gut_all_cells_filt@meta.data %>% colnames
+```
+
+```{r}
+gut_all_cells_filt$patient2 %>% table
+gut_all_cells_filt$patient3 <- paste(gut_all_cells_filt$source, gut_all_cells_filt$patient2)
+
+gut_all_cells_filt$patient3 %>% table
+
+gut_all_cells_filt$disease %>% table
+gut_all_cells_filt$Disease %>% table
+gut_all_cells_filt$diagnosis %>% table
+
+
+gut_all_cells_filt@meta.data <- gut_all_cells_filt@meta.data %>% 
+  mutate(disease_unified = case_when(!is.na(disease) ~ disease,
+                                     !is.na(diagnosis) ~ diagnosis,
+                                     !is.na(Disease) ~ Disease))
+
+gut_all_cells_filt$disease_unified %>% table
+
+gut_all_cells_filt$disease_unified <- gsub(gut_all_cells_filt$disease_unified, pattern = "Healthy", replacement = "HEA")
+
+gut_all_cells_filt$disease_unified %>% table
+
+gut_all_cells_filt@meta.data %>% group_by(disease_unified, source) %>% tally
+
+```
+
+```{r}
+gut_all_cells_filt@meta.data %>% group_by(disease_unified, source) %>% tally
+
+gut_all_cells_filt$source %>% table
+```
+
+```{r}
+gut_all_cells_filt@meta.data  %>% 
+  mutate(patient3 = paste(source, disease_unified, patient2)) %>% 
+  group_by(patient3, source, disease_unified, annotations_main) %>% 
+tally()  %>% 
+ggplot(aes(x = patient3, y = n, fill = annotations_main)) +
+  geom_bar(position="fill", stat="identity") +
+theme_classic() +
+xlab("") +
+  theme(axis.text.x = element_text(angle = 90))
+
+library(svglite)
+ggsave("ligand_receptor/barplot_annotations_main_per_patient.svg", width = 36, height = 20)
+ggsave("ligand_receptor/barplot_annotations_main_per_patient.png", width = 36, height = 20)
+
+```
+
+```{r}
+avgexp <- AverageExpression(gut_all_cells_filt, group.by = "annotations_main", features = c('IFNG',
+'IL27',
+'IFNB1',
+'IL21',
+'IL10',
+'IFNA16',
+'TNF',
+'IFNA5',
+'IFNA2',
+'OSM',
+'IL4',
+'IFNA13',
+'IFNA14',
+'IFNK',
+'IFNA8',
+'IFNA4',
+'IL6',
+'SIGLEC14',
+'VSIG10'
+), assay = "RNA", return.seurat = F)
+
+
+pheatmap::pheatmap(t(avgexp$RNA), main = "", 
+         scale = "column", cluster_cols = F, cluster_rows = T,
+        color=colorRampPalette(c("dodgerblue", "grey95", "indianred2"))(50), 
+         border_color = "white",
+                  fontsize = 9)
+
+
+pheatmap::pheatmap(t(avgexp$RNA), main = "", 
+         scale = "column", cluster_cols = T, cluster_rows = T,
+        color=colorRampPalette(c("dodgerblue", "grey95", "indianred2"))(50), 
+         border_color = "white",
+                  fontsize = 13, filename = "figures/ligand_receptor/heatmap_expression.pdf", width = 10, height = 6)
+```
+
+```{r}
+avgexp <- AverageExpression(gut_all_cells_filt, group.by = "annotations_fine", features = c('IFNG',
+'IL27',
+'IFNB1',
+'IL21',
+'IL10',
+'IFNA16',
+'TNF',
+'IFNA5',
+'IFNA2',
+'OSM',
+'IL4',
+'IFNA13',
+'IFNA14',
+'IFNK',
+'IFNA8',
+'IFNA4',
+'IL6',
+'SIGLEC14',
+'VSIG10'
+), assay = "RNA", return.seurat = F)
+
+
+pheatmap::pheatmap(t(avgexp$RNA), main = "", 
+         scale = "column", cluster_cols = F, cluster_rows = T,
+        color=colorRampPalette(c("dodgerblue", "grey95", "indianred2"))(50), 
+         border_color = "white",
+                  fontsize = 9)
+```
+
+```{r}
+pheatmap::pheatmap(t(avgexp$RNA), main = "", 
+         scale = "column", cluster_cols = T, cluster_rows = T,
+        color=colorRampPalette(c("dodgerblue", "grey95", "indianred2"))(50), 
+         border_color = "white",
+                  fontsize = 13, filename = "figures/ligand_receptor/heatmap_expression2.pdf", width = 10, height = 20)
+```
+
+# Aggregate Expression
+
+```{r}
+
+gut_all_cells_filt@meta.data <- gut_all_cells_filt@meta.data %>% 
+  mutate(patient2 = ifelse(!is.na(patient),patient,
+                           ifelse(!is.na(Patient),Patient,participant_id)))
+
+
+gut_all_cells_filt$patient2 %>% table
+
+is.na(gut_all_cells_filt$patient2) %>% table
+
+gut_all_cells_filt$annotations_fine_patient2 <- paste(gut_all_cells_filt$annotations_fine, gut_all_cells_filt$patient2, sep = "---")
+
+
+aggexp <- AggregateExpression(gut_all_cells_filt, assay = "RNA", group.by = "annotations_fine_patient2", return.seurat = T, 
+                              features = c('IFNG',
+'IL27',
+'IFNB1',
+'IL21',
+'IL10',
+'IFNA16',
+'TNF',
+'IFNA5',
+'IFNA2',
+'OSM',
+'IL4',
+'IFNA13',
+'IFNA14',
+'IFNK',
+'IFNA8',
+'IFNA4',
+'IL6',
+'SIGLEC14',
+'VSIG10'
+))
+
+aggexp@meta.data <- aggexp@meta.data %>% separate(annotations_fine_patient2, into = c("annotations_fine", "patient2"), 
+                                                  sep = "---", remove = F)
+
+annotations <- gut_all_cells_filt@meta.data %>% group_by(annotations_main, annotations_coarse, annotations_fine) %>% tally() %>% 
+  arrange(desc(n)) %>% 
+  dplyr::select(-n) %>% unique %>% 
+  mutate(annotations_coarse = ifelse(annotations_fine == "Transitional Enterocytes", "Enterocytes", annotations_coarse)) %>% unique
+
+annotations %>% arrange(annotations_fine) 
+
+md <- aggexp@meta.data 
+
+md <- left_join(md, annotations)
+
+rownames(md) <- colnames(aggexp)
+
+aggexp@meta.data <- md
+
+
+
+```
+
+```{r}
+
+diagnosis <- gut_all_cells_filt@meta.data %>% group_by(patient2, diagnosis, disease, Disease, antitnf_response, antiTNF_response, Remission_status, Treatment) %>% tally() %>% 
+  arrange(desc(n)) %>% 
+  dplyr::select(-n) %>% unique 
+
+diagnosis
+
+md <- aggexp@meta.data 
+
+md <- left_join(md, diagnosis)
+
+rownames(md) <- colnames(aggexp)
+
+aggexp@meta.data <- md
+
+```
+
+```{r}
+
+
+aggexp@meta.data
+saveRDS(aggexp, "ligand_receptor/aggregated_gut_allcells_filt.rds")
+```
+
+```{r fig.height=6}
+VlnPlot(subset(aggexp, annotations_main == "Myeloid cells"), features = "IL27", group.by = "annotations_fine") + NoLegend() +
+  theme(axis.text.x = element_text(angle = 90))
+
+VlnPlot(subset(aggexp, annotations_main == "Myeloid cells"), features = "IFNG", group.by = "annotations_fine") + NoLegend() +
+  theme(axis.text.x = element_text(angle = 90))
+
+VlnPlot(subset(aggexp, annotations_main == "Myeloid cells"), features = "IFNB1", group.by = "annotations_fine") + NoLegend() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+```{r}
+VlnPlot(subset(aggexp, annotations_main == "Myeloid cells"), features = "IL27", group.by = "Disease") + NoLegend() +
+  theme(axis.text.x = element_text(angle = 90))
+
+VlnPlot(subset(aggexp, annotations_main == "Myeloid cells"), features = "IL27", group.by = "disease") + NoLegend() +
+  theme(axis.text.x = element_text(angle = 90))
+
+VlnPlot(subset(aggexp, annotations_main == "Myeloid cells"), features = "IL27", group.by = "diagnosis") + NoLegend() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+# Markers in main annotations
+
+```{r}
+gut_all_cells_filt$annotations_main_patients <- paste(gut_all_cells_filt$annotations_main, gut_all_cells_filt$patient2, sep = "__")
+
+aggexp <- AggregateExpression(gut_all_cells_filt, assay = "RNA", group.by = c("annotations_main_patients"), return.seurat = T)
+
+
+aggexp@meta.data <- aggexp@meta.data %>% separate(annotations_main_patients, into = c("annotations_main", "patient"), sep = "--", remove = F)
+
+Idents(aggexp) <- aggexp$annotations_main
+
+aggexp$annotations_main %>% table
+
+
+mrk_aggexp_annotations_main <- FindAllMarkers(aggexp)
+
+
+mrk_aggexp_annotations_main %>% 
+  dplyr::filter(!grepl(gene, pattern = "\\.")) %>% 
+  dplyr::filter(!grepl(gene, pattern = "^LINC")) %>% 
+  dplyr::filter(cluster == "T cells") %>% pull(gene)
+```
+
+```{r}
+markers_main_annotations <- c(
+  # B cells
+  "CD19","CD79A","IGHE","IGHD","IGHM","TLR10","CR1","TNFRSF13B","TNFRSF13C","FCRL1","FCRL2","BANK1","VPREB3",
+  # Endothelial
+  "PECAM1",   # CD31 - gold-standard endothelial marker
+  "VWF",      # Classic endothelial lineage gene
+  "KDR",      # VEGFR2 - key endothelial receptor
+  "FLT1",     # VEGFR1
+  "TEK",      # Tie2 - pan-endothelial
+  "TIE1",     # Tie1 - endothelial receptor
+  "ENG",      # Endoglin (CD105)
+  "CDH5",     # VE-Cadherin
+  "ESAM",     # Endothelial tight junction molecule
+  "CLDN5",    # Tight junction claudin, especially capillary endothelial
+  "MMRN2",    # Endothelial-secreted matrix protein
+  "ROBO4",    # Endothelial-specific guidance receptor
+  "PLVAP",    # Fenestrated/vascular endothelial marker
+  "LYVE1",    # Lymphatic endothelium
+  "PROX1",    # (if present; lymphatic) NOT in list but LYVE1 connected
+  "EPHB4",    # Venous EC marker
+  "NRP1",     # Arterial EC marker
+  "NRP2",     # Lymphatic EC / venous-associated
+  "ACKR1",    # Venular endothelial marker
+  "ADGRL4",    # ELTD1, angiogenic endothelial hallmark
+  # Epithelial
+  "KRT14",
+  "KRT13",
+  "KRT12",
+  "DSG1",      # (DSG1-AS1 present; DSG1 is canonical)
+  "DSG3",
+  "PKP1",
+  "CLCA4",
+  "CEACAM6",
+  "B4GALNT2",
+  "SPDEF",
+  "REG3G",
+  "GRHL2",
+  "HNF1A",
+  "HNF1B",
+  "FOXA2",
+  "ATOH1",
+  "POU2F3",
+  "ITGB6",
+  "TM4SF4",
+  "CLDN6",
+  "CLDN9",
+  "ODAM",
+  "KRT15",
+  "CEACAM18",
+  "CEACAM20",
+  "SLC34A2",
+  "NOX1",
+  "SLC17A4",
+  "FIBCD1",
+  # Mast cells
+  "KIT",        # Stem cell factor receptor, foundational mast cell marker
+  "TPSAB1",     # Tryptase alpha/beta – core granule proteases
+  "TPSB2",      # Tryptase beta 2 – highly mast-cell specific
+  "TPSD1",      # Delta tryptase – mast cell-enriched
+  "CPA3",       # Carboxypeptidase A3 – hallmark MC marker
+  "HPGDS",      # Hematopoietic PGD synthase – mast cell / basophil signature
+  "HDC",        # Histidine decarboxylase – histamine production
+  "FCER1A",     # High-affinity IgE receptor alpha chain
+  "MS4A2",      # FcεRI beta chain – mast-cell defining
+  "GATA2",      # Key transcription factor for MC lineage
+  "MITF",       # Mast cell master regulator, downstream of KIT
+  "SLC18A2",    # VMAT2 – histamine transporter into granules
+  "SIGLEC6",    # Human mature mast cell marker
+  "SIGLEC8",    # Eosinophil/mast cell receptor – strongly enriched in MCs
+  "IL1RL1",     # ST2 – activated mast cells; also MC subset marker
+  "ADGRE2",     # EMR2 – MC surface receptor
+  "LTC4S",      # Leukotriene C4 synthase – key in MC eicosanoid production
+  "PRG2",       # Major basic protein 2 – mast cell & eosinophil granules
+  "CTSG",       # Cathepsin G – granule protease enriched in MCs
+  "RGS13" ,      # MC signaling regulator, highly mast-cell specific
+  # Myeloid cells
+   "LYZ",        # Pan-myeloid marker
+  "S100A9",     # Granulocyte / inflammatory monocyte marker
+  "S100A12",    # Strong neutrophil / inflammatory myeloid gene
+  "FCGR3A",     # CD16 – non-classical monocytes, macrophages
+  "FCGR2A",     # CD32 – monocytes/macrophages
+  "CD14",       # Classical monocyte marker
+  "CSF1R",      # Macrophage lineage receptor
+  "CD68",       # Core macrophage marker
+  "MRC1",       # CD206 – M2-like tissue macrophages
+  "CD163",      # Hemoglobin scavenger receptor – M2 macrophages
+  "FOLR2",      # Tissue-resident macrophages (especially gut)
+  "MSR1",       # Scavenger receptor, macrophage marker
+  "MARCO",      # Alveolar & tissue macrophage receptor
+  "TREM2",      # Macrophage activation / lipid-associated macrophages
+  "GPNMB",      # Repair-associated macrophages
+  "CTSS",       # Lysosomal protease – APCs
+  "CTSB",       # Lysosomal enzyme – macrophages
+  "ITGB2",      # CD18 – leukocyte adhesion (myeloid)
+  "SPI1",       # PU.1 – master myeloid transcription factor
+  "HCK",        # Src-family kinase, myeloid lineage
+  "MNDA",       # Monocytes / macrophages
+  "CLEC7A",     # Dectin-1 – monocyte/macrophage PRR
+  "CLEC4E",     # Mincle – macrophage PRR
+  "CLEC10A",    # CD301 – dendritic cells (DC2), alternatively M2 macrophages
+  "XCR1",       # cDC1 marker
+  "CLEC9A",     # DNGR1 – cDC1 gold-standard marker
+  "CD1B",       # Dendritic cell lipid antigen presentation
+  "CD1E",       # DC antigen presentation
+  "LAMP3",      # Migratory dendritic cells
+  "HLA-DRA",    # MHC II – antigen presentation
+  "HLA-DPB1",
+  "HLA-DPA1",
+  "HLA-DQA1",
+  "HLA-DQB1",
+   # Plasma cells
+    "XBP1",      # Master regulator of plasma cell differentiation & UPR
+  "MZB1",      # Strong plasma cell chaperone, ER-resident
+  "JCHAIN",    # Joining chain for IgA/IgM – classic plasma cell marker
+  "SDC1",      # CD138, canonical plasma cell surface marker
+  "TNFRSF17",  # BCMA, key plasma cell survival receptor
+  "DERL3",     # ERAD/secretory pathway, highly enriched in plasma cells
+  "FKBP11",    # ER chaperone, plasma-cell biased
+  "PRDX4",     # ER peroxidase, up in secretory/plasma cells
+  "SEC11C",    # Signal peptidase complex – secretory apparatus
+  "SSR4",      # Translocon (TRAP complex) subunit – high in plasma cells
+  "SSR3",      # Another TRAP component; supports heavy secretion
+  "BHLHA15",   # MIST1, secretory lineage TF (including plasma cells)
+  "IGKC",      # Ig kappa constant – robust Ig-producing B/plasma cells
+  "IGHA1",     # IgA constant region (class-switched plasma cells)
+  "IGHA2",     # IgA2 constant – mucosal plasma cells
+  "IGHG1",     # IgG1 constant – class-switched plasma cells
+  "IGLC2",     # Lambda light chain constant
+  "IGLC5",     # Lambda constant
+  "IGLC6",     # Lambda constant
+  "MANEA",      # Golgi mannosidase, upregulated in high-secretory states
+   # Proliferating cells
+    "MKI67",     # (Not in list but canonical; add if available)
+  "BIRC5",     # Survivin – top proliferation/G2-M marker
+  "STMN1",     # Microtubule regulator, strong cycling marker
+  "PTTG1",     # Securin – G2/M checkpoint regulator
+  "TYMS",      # Thymidylate synthase – DNA synthesis marker
+  "MCM5",      # DNA replication complex – S phase
+  "CDCA7",     # G1/S transcriptional target
+  "CENPM",     # Centromere protein – G2/M
+  "DHFR",      # S-phase enzyme (folate pathway)
+  "RPA3",      # Replication protein A – DNA replication
+  "TOP1",      # DNA topoisomerase I – S/G2
+  "PARP1",     # DNA repair enzyme, elevated in cycling cells
+  "HMGA1",     # Chromatin remodeling during proliferation
+  "HMGB2",     # High in proliferating cells (G1/S)
+  "HMGB1",     # High-mobility group; proliferation-linked
+  "H2AFZ",     # Histone variant enriched in dividing cells
+  "H2AFV",     # Histone variant enriched in S phase
+  "NPM1",      # Nucleophosmin – strong proliferative signature
+  "RAN",       # Cell cycle nuclear transport
+  "CDKN1C",    # Negative cell cycle regulator; up in some cycling states
+  "SLBP",      # Histone mRNA stability – S phase marker
+  "PLK1",      # (Not present here, but canonical; add if you want)
+  "CDC14B",    # Cell cycle phosphatase, mitotic exit
+  "XRCC6",      # DNA repair (Ku70) often high in proliferating cells
+   # Stromal cells
+    "COL14A1",     # Matrix fibroblast marker
+  "COL12A1",     # Classical ECM-producing fibroblast gene
+  "COL21A1",     # Interstitial fibroblast ECM
+  "COL11A1",     # Activated fibroblast / myofibroblast marker
+  "DCN",         # (Not present, but your list contains DPT instead)
+  "DPT",         # Dermatopontin – universal fibroblast marker
+  "ISLR",        # Fibroblast stromal gene
+  "MXRA5",       # Matrix remodeling fibroblast gene
+  "SFRP1",       # Wnt-modulating fibroblast hallmark
+  "FIBIN",       # Stromal developmental gene
+  "FOXF1",       # Mesenchymal lineage TF
+  "FOXF2",       # Mesenchymal fibroblast regulator
+  "FOXL1",       # Intestinal subepithelial myofibroblasts (ISEMFs)
+  "PRRX1",       # Fibroblast lineage-defining transcription factor
+  "TWIST2",      # Fibroblast TF; mesenchymal identity
+  "PDGFRB",      # (Not in list, but your list contains PDZRN3 & PRDM6)
+  "PRDM6",       # Vascular/fibroblast smooth muscle-like stromal cells
+  "ACTG2",       # Smooth muscle / myofibroblast cytoskeleton
+  "CNN1",        # Contractile fibroblast-like / smooth muscle marker
+  "DES",         # Desmin — muscular fibroblasts
+  "CSPG4",       # NG2 — pericyte/fibroblast subset
+  "SVEP1",       # Strong fibroblast / stromal organizer gene
+  "COL6A5",      # ECM-rich fibroblast (dermal / ISEMF-like)
+  "HAPLN1",      # ECM crosslinking fibroblast marker
+  "PTN",         # Pleiotrophin — stromal growth factor
+  "BMPER",       # Fibroblast/perivascular stromal signaling
+  "ANGPTL1",     # Secreted fibroblast / stromal factor
+  "ANGPTL7",     # Fibroblast-like signature gene
+  "HAS2",        # Hyaluronan synthase – fibroblast ECM production
+  "LOXL4",        # ECM remodeling enzyme (lysyl oxidase-like)
+   #T cells
+  
+  "TRAC",
+  "TRBC1",
+  "TRBC2",
+  "CD3D",
+  "CD3E",
+  "CD3G",
+  "CD247",
+  "CD2",
+  "CD5",
+  "CD6",
+  "CD7",
+  "CD28",
+  "PTPRC",   # CD45
+  "IL7R",
+  "LCK",
+  "ZAP70",
+  "ITK",
+  "LAT")
+
+  
+```
+
+```{r fig.width = 24, fig.height = 7}
+DefaultAssay(gut_all_cells_filt) <- "RNA"
+DotPlot(gut_all_cells_filt, group.by = "annotations_main", features = markers_main_annotations) + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  scale_fill_gradient2()
+
+```
+
+```{r}
+markers_main_annotations_list <- list(
+  B_cells = c(
+    "CD19",
+    "CD79A",
+    "IGHM",
+    "IGHD",
+    "CR1",
+    "TNFRSF13C",
+    "TNFRSF13B",
+    "FCRL1",
+    "FCRL2",
+    "BANK1"
+  ),
+
+  Endothelial = c(
+    "PECAM1",
+    "VWF",
+    "KDR",
+    "FLT1",
+    "TEK",
+    "TIE1",
+    "ENG",
+    "CDH5",
+    "ESAM",
+    "CLDN5"
+  ),
+
+  Epithelial = c(   # prioritized for high expression / good separation
+    "SLC34A2",
+    "CLCA4",
+    "CEACAM6",
+    "NOX1",
+    "FIBCD1",
+    "B4GALNT2",
+    "KRT14",
+    "KRT15",
+    "ITGB6",
+    "TM4SF4"
+  ),
+
+  Mast_cells = c(
+    "KIT",
+    "TPSAB1",
+    "TPSB2",
+    "TPSD1",
+    "CPA3",
+    "HPGDS",
+    "HDC",
+    "FCER1A",
+    "MS4A2",
+    "GATA2"
+  ),
+
+  Myeloid = c(
+    "LYZ",
+    "S100A9",
+    "S100A12",
+    "CD14",
+    "FCGR3A",
+    "CSF1R",
+    "CD68",
+    "MRC1",
+    "CD163",
+    "HLA-DRA"
+  ),
+
+  Plasma_cells = c(
+    "XBP1",
+    "MZB1",
+    "JCHAIN",
+    "SDC1",
+    "TNFRSF17",
+    "DERL3",
+    "FKBP11",
+    "IGKC",
+    "IGHA1",
+    "IGHG1"
+  ),
+
+  Proliferating = c(
+    "MKI67",
+    "BIRC5",
+    "STMN1",
+    "PTTG1",
+    "TYMS",
+    "MCM5",
+    "CENPM",
+    "DHFR",
+    "RPA3",
+    "TOP1"
+  ),
+
+  Stromal = c(
+    "COL14A1",
+    "COL12A1",
+    "COL11A1",
+    "DPT",
+    "ISLR",
+    "MXRA5",
+    "PRRX1",
+    "TWIST2",
+    "FOXF1",
+    "FOXL1"
+  ),
+
+  T_cells = c(
+    "TRAC",
+    "CD3D",
+    "CD3E",
+    "CD3G",
+    "CD247",
+    "CD2",
+    "CD5",
+    "CD7",
+    "CD28",
+    "IL7R"
+  )
+)
+```
+
+```{r fig.width = 24, fig.height = 7}
+markers <- unname(unlist(markers_main_annotations_list))   # if using the list we made
+markers
+
+DotPlot(
+  object = gut_all_cells_filt,
+  features = markers, group.by = "annotations_main") +
+  scale_color_gradient2(
+    low = "dodgerblue",
+    mid = "grey75",
+    high = "indianred2",
+    midpoint = 0
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_size(range = c(2, 8)) 
+
+library(svglite)
+ggsave("ligand_receptor/dotplot_genes_annotations_main.svg", width = 24, height = 7)
+ggsave("ligand_receptor/dotplot_genes_annotations_main.png", width = 24, height = 7)
+```
+
+# Markers in annotations fine
+
+```{r}
+annotations <- gut_all_cells_filt@meta.data %>% group_by(annotations_main, annotations_coarse, annotations_fine) %>% tally() %>% 
+  arrange(desc(n)) %>% 
+  dplyr::select(-n) %>% unique %>% 
+  mutate(annotations_coarse = ifelse(annotations_fine == "Transitional Enterocytes", "Enterocytes", annotations_coarse)) %>% unique
+
+gut_all_cells_filt@meta.data %>% group_by(annotations_main, annotations_coarse, annotations_fine, source) %>% tally() %>% 
+  arrange(desc(n)) %>% pivot_wider(names_from = source, values_from = n, values_fill = 0) %>% 
+  arrange(annotations_main, annotations_coarse, annotations_fine)
+```
+
+```{r}
+gut_all_cells_filt$annotations_fine_patients <- paste(gut_all_cells_filt$annotations_fine, gut_all_cells_filt$patient2, sep = "__")
+
+aggexp <- AggregateExpression(gut_all_cells_filt, assay = "RNA", group.by = c("annotations_fine_patients"), return.seurat = T)
+
+
+annotations
+
+new_md <- aggexp@meta.data %>% 
+  separate(annotations_fine_patients, into = c("annotations_fine", "patient"), sep = "--", remove = F) %>% 
+  left_join(annotations)
+
+
+rownames(new_md) <- colnames(aggexp)
+
+aggexp@meta.data <- new_md
+
+for(i in levels(factor(aggexp$annotations_main))){
+  if(i != "Mast cells"){
+    seu_sub <- subset(aggexp, annotations_main == i)
+    
+    Idents(seu_sub) <- seu_sub$annotations_fine
+    mrk <- FindAllMarkers(seu_sub, only.pos = T)
+    
+    if(!is.null(mrk)){
+      if(i == levels(factor(aggexp$annotations_main))[1]){
+        mrk$annotations_main <- i
+        df_all <- mrk
+        
+      } else {
+        mrk$annotations_main <- i
+        df_all <- rbind(df_all, mrk)
+      }
+    }
+  }
+}
+
+annotations %>% dplyr::filter(annotations_main == "Mast cells")
+```
+
+```{r}
+df_all$annotations_main %>% table
+```
+
+```{r}
+df_all %>% dplyr::filter(annotations_main == "T cells") %>% 
+  dplyr::filter(!grepl(gene, pattern = "\\.")) %>% 
+  dplyr::filter(!grepl(gene, pattern = "^LINC")) %>% 
+  group_by(cluster) %>% 
+  slice_head(n = 100) %>% 
+  summarise(genes = list(gene)) %>%
+  tibble::deframe()
+```
+
+## Subset markers B cells
+
+```{r}
+seu_sub <- subset(gut_all_cells_filt, annotations_main == "B cells")
+
+subset_markers <-  list(
+  CD21low_Memory       = c("ITGAX","FCRL4","FCRL5","ZBTB32","SOX5"),
+  Early_plasmablasts   = c("HSPA5","CALR","CCND2","MIR155HG","IMPDH2"),
+  GC_like              = c("AICDA","SERPINA9","RGS13","POU2AF1","LRMP"),
+  Memory_Early_activated = c("DUSP1","JUN","FOS","CD69","NR4A1"),
+  Memory               = c("S100A4","IL2RA","ITGAM","MNDA","BTNL9"),
+  Naive_IFN            = c("STAT1","EPSTI1","IFI44L","IFITM1","MX1"),
+  Naive                = c("TCL1A","IGHD","FCER2","SELL","CD72")
+)
+
+markers <- unname(unlist(subset_markers))   # if using the list we made
+markers
+```
+
+```{r fig.width=10, fig.height=6}
+DotPlot(
+  object = seu_sub,
+  group.by = "annotations_fine",
+  features = markers) +
+  scale_color_gradient2(
+    low = "dodgerblue",
+    mid = "white",
+    high = "indianred2",
+    midpoint = 0
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_size(range = c(2, 8)) 
+  
+
+library(svglite)
+ggsave("ligand_receptor/dotplot_genes_bcells.svg", width = 12, height = 5)
+ggsave("ligand_receptor/dotplot_genes_bcells.png", width = 12, height = 5)
+
+```
+
+## Subset markers Endothelial cells
+
+```{r}
+seu_sub <- subset(gut_all_cells_filt, annotations_main == "Endothelial cells")
+
+subset_markers <- 
+list(
+  Arterial_endothelia       = c("SOX17","EFNB2","HEY1","EDN1","GJA5"),
+  Capillary_endothelia      = c("CA4","COL15A1","PLVAP","RGCC","ESM1"),
+  HEV_like_venous_endothelia= c("ACKR1","MADCAM1","FUT7","CHST4","SELP"),
+  Lymphatic_endothelia      = c("PROX1","PDPN","LYVE1","CCL21","FLT4"),
+  Pericyte_like_endothelia  = c("PDGFRB","CSPG4","RGS5","NOTCH3","KCNJ8"),
+  Proliferating_endothelia  = c("MKI67","TOP2A","BIRC5","CENPA","AURKB"),
+  Venous_endothelia         = c("SELE","ANGPTL1","CYP1B1","APLNR","ACKR4")
+)
+
+markers <- unname(unlist(subset_markers))   # if using the list we made
+markers
+```
+
+```{r fig.width=10, fig.height=6}
+DotPlot(
+  object = seu_sub,
+  group.by = "annotations_fine",
+  features = markers) +
+  scale_color_gradient2(
+    low = "dodgerblue",
+    mid = "white",
+    high = "indianred2",
+    midpoint = 0
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_size(range = c(2, 8)) 
+  
+
+library(svglite)
+ggsave("ligand_receptor/dotplot_genes_endot.svg", width = 12, height = 5)
+ggsave("ligand_receptor/dotplot_genes_endot.png", width = 12, height = 5)
+
+```
+
+## Epithelial subsets
+
+Note: merge Transitional and Homeostatic enterocytes to Absorptive_Enterocytes.
+
+```{r}
+epithelial_subset_markers <- list(
+  Cycling_epithelial_progenitors = c("MKI67","TOP2A","BIRC5","PLK1","CDK1"),
+  
+  Enteroendocrine_cells          = c("NEUROG3","NEUROD1","INSM1","CHGA","TPH1"),
+  
+  Epithelial_BEST4_pos           = c("BEST4","OTOP2","CA7","GUCA2A","CFTR"),
+  
+  Epithelial_SELENOP_pos         = c("EPCAM","KRT19","GCNT3","LGALS4","AKR1B10"),
+  
+  Goblet_cells                   = c("SPDEF","ATOH1","ITLN1","TFF3","FCGBP"),
+  
+  Absorptive_Enterocytes         = c("ALDOB","APOB","SLC5A1","SLC10A2","ACE2"),
+  
+  Inflammatory_Enterocytes       = c("IL32","HLA-DRB1","SERPINA1","SELENOP","ANPEP"),
+  
+  Intestinal_stem_cells          = c("LGR5","OLFM4","ASCL2","SMOC2","RNF43"),
+  
+  Paneth_cells                   = c("DEFA5","DEFA6","LYZ","REG3A","PLA2G2A"),
+  
+  Regenerative_epithelium        = c("CPNE7","TAF4B","CYP4X1","APCDD1","PTPRO"),
+  
+  Tuft_cells                     = c("POU2F3","TRPM5","GNAT3","CHAT","IL17RB")
+)
+
+```
+
+## Myeloid subsets
+
+Note: rename Homeostatic monocytes to Inflammatory Monocyte-derived MQ.
+
+```{r}
+markers_myeloid_subsets <- list(
+  Activated_chemokine_monocytes = c("IL1B","CXCL10","CXCL11","ACOD1","AQP9"),
+  cDC1                          = c("XCR1","CLEC9A","BATF3","CADM1","WDFY4"),
+  cDC2                          = c("CD1C","FCER1A","CLEC10A","CD1E","S100Z"),
+  Inflam_MoDerivedMQ         = c("CCR2","FCN1","CX3CR1","CLEC7A","CSF1R"),
+  IFN_activated_MQ              = c("GPNMB","C1QC","APOE","TMEM119","CCL18"),
+  Inflammatory_migDC            = c("LAMP3","CCR7","CCL19","FSCN1","IDO1"),
+  Inflammatory_monocytes        = c("S100A8","S100A9","S100A12","VCAN","OLR1"),
+  Inflammatory_MQ               = c("CD163","MRC1","FOLR2","C1QA","LYVE1"),
+  migDC                         = c("AIRE","RELN","CD83","S1PR1","NPTX1"),
+  pDC                           = c("CLEC4C","LILRA4","GZMB","TCF4","IL3RA"),
+  Post_inflammatory_MQ          = c("TIMD4","ADAMDEC1","PLA2G2D","ENPP2","A2M"),
+  Proliferating_myeloid         = c("MKI67","TOP2A","BIRC5","CCNA2","CDK1")
+)
+```
+
+## Plasma cells
+
+```{r}
+plasma_subset_markers <- list(
+  PC_IgA = c("IGHA1", "IGHA2", "JCHAIN", "CCR10", "CCR9"),
+  PC_IgG = c("IGHG1", "IGHG2", "IGHG3", "IGHG4", "XBP1")
+)
+```
+
+## Proliferating cells
+
+```{r}
+prolif_subset_markers <- list(
+  Proliferating_B_cells = c("CD19", "MS4A1", "CD79A", "BANK1", "PAX5"),
+  Proliferating_T_cells = c("CD3D", "CD3E", "TRAC", "TRBC1", "CD4")
+)
+```
+
+## Stromal cells
+
+```{r}
+stromal_subset_markers <- list(
+  Epithelial_associated_Fibroblasts = c(
+    "PDGFRA",   # fibroblast lineage / niche
+    "ITGA11",   # collagen-binding fibroblast integrin
+    "POSTN",    # periostin, subepithelial ECM fibroblast
+    "WNT5A",    # epithelial–stromal signaling
+    "CXCL14"    # chemokine from epithelial-adjacent fibroblasts
+  ),
+  Glia = c(
+    "SOX10",    # glial/Schwann TF
+    "PLP1",     # myelin protein
+    "MPZ",      # peripheral myelin protein zero
+    "PTPRZ1",   # glial receptor-type PTP
+    "S100B"     # classic glial Ca2+-binding protein
+  ),
+  Homeostatic_Fibroblasts = c(
+    "DCN",      # decorin, core fibroblast ECM
+    "LUM",      # lumican, matrix fibroblast
+    "DPT",      # dermatopontin, pan-fibroblast
+    "SVEP1",    # stromal organizer/ECM fibroblast
+    "COL6A5"    # ECM-rich interstitial fibroblast
+  ),
+  Homeostatic_pericytes = c(
+    "MYH11",    # smooth muscle myosin, mural cells
+    "ACTA2",    # αSMA, contractile pericytes/SMCs
+    "TAGLN",    # transgelin, mural/pericyte
+    "RERGL",    # pericyte-enriched small GTPase-like
+    "NOTCH3"    # canonical pericyte/smooth muscle receptor
+  ),
+  Inflammatory_Fibroblasts_LP = c(
+    "CXCL1",    # neutrophil-attracting chemokine
+    "CXCL6",    # inflammatory chemokine
+    "CCL13",    # monocyte/eosinophil chemokine
+    "CCL8",     # broad inflammatory chemokine
+    "ADAMDEC1"  # inflammation-associated stromal protease
+  ),
+  Inflammatory_pericytes = c(
+    "PDGFRB",   # pericyte receptor, activated state
+    "RGS5",     # hallmark pericyte / angiogenic mural cell
+    "ABCC9",    # KATP channel subunit in pericytes
+    "KCNJ8",    # KATP inward rectifier, pericyte activation
+    "HIGD1B"    # hypoxia-induced, vessel-associated
+  ),
+  Myofibroblasts = c(
+    "ACTG2",    # smooth muscle actin gamma, myofibroblast
+    "CNN1",     # calponin 1, contractile
+    "LMOD1",    # leiomodin, smooth muscle
+    "MYOCD",    # myocardin, smooth muscle TF
+    "MFAP5"     # microfibrillar ECM, myofibroblast-rich
+  ),
+  Stromal_organizer_cells = c(
+    "CXCL13",   # B cell zone chemokine
+    "CCL19",    # T cell / DC zone chemokine
+    "CCL21",    # lymphoid stromal chemokine
+    "FDCSP",    # follicular dendritic cell secreted protein
+    "TNFSF13B"  # BAFF, B cell survival cytokine
+  )
+)
+```
+
+## T cells
+
+```{r}
+t_cell_markers <- list(
+  CD4_CTL      = c("IL26", "IL22", "CXCR6", "CSF2", "IL17F"),
+  CD4_Naive    = c("CCR7", "SELL", "TCF7", "LEF1", "MAL"),
+  CD4_Tcm      = c("CXCR5", "CXCL13", "ICOS", "IL21", "SH2D4A"),
+  CD4_Th17     = c("IL17A", "CCR6", "CCL20", "RORA", "IL22RA2"),
+  CD4_Treg     = c("FOXP3", "IL2RA", "CTLA4", "CCR8", "LRRC32"),
+  
+  CD8_MAIT     = c("KLRB1", "ZBTB16", "IL18RAP", "TRDV2", "TRGV9"),
+  CD8_Memory   = c("CCL5", "ITGAE", "RUNX3", "CD160", "IL7R"),
+  CD8_Naive    = c("CD8A", "CD8B", "SFRP5", "RGS10", "NOG"),
+  CD8_Tcm      = c("ZNF683", "KIR3DL3", "KLRD1", "XCL1", "XCL2"),
+  CD8_Tmk      = c("EOMES", "PDCD1", "LAG3", "KLRG1", "TNFRSF9"),
+  
+  ILC          = c("KIT", "NCR2", "RORC", "IL23R", "SH2D1B"),
+  NK_cells     = c("NCAM1", "NKG7", "PRF1", "GZMB", "KLRF1"),
+  Proliferating = c("MCPH1", "DDX58", "DDX60L", "RSAD1", "CDC23")
+)
+
+```
+
+## All marker genes
+
+```{r}
+all_genes_list <- c(
+
+CD21low_Memory       = c("ITGAX","FCRL4","FCRL5","ZBTB32","SOX5"),
+  Early_plasmablasts   = c("HSPA5","CALR","CCND2","MIR155HG","IMPDH2"),
+  GC_like              = c("AICDA","SERPINA9","RGS13","POU2AF1","LRMP"),
+  Memory_Early_activated = c("DUSP1","JUN","FOS","CD69","NR4A1"),
+  Memory               = c("S100A4","IL2RA","ITGAM","MNDA","BTNL9"),
+  Naive_IFN            = c("STAT1","EPSTI1","IFI44L","IFITM1","MX1"),
+  Naive                = c("TCL1A","IGHD","FCER2","SELL","CD72"),
+
+Arterial_endothelia       = c("SOX17","EFNB2","HEY1","EDN1","GJA5"),
+  Capillary_endothelia      = c("CA4","COL15A1","PLVAP","RGCC","ESM1"),
+  HEV_like_venous_endothelia= c("ACKR1","MADCAM1","FUT7","CHST4","SELP"),
+  Lymphatic_endothelia      = c("PROX1","PDPN","LYVE1","CCL21","FLT4"),
+  Pericyte_like_endothelia  = c("PDGFRB","CSPG4","RGS5","NOTCH3","KCNJ8"),
+  Proliferating_endothelia  = c("MKI67","TOP2A","BIRC5","CENPA","AURKB"),
+  Venous_endothelia         = c("SELE","ANGPTL1","CYP1B1","APLNR","ACKR4"),
+
+ Cycling_epithelial_progenitors = c("MKI67","TOP2A","BIRC5","PLK1","CDK1"),
+   Enteroendocrine_cells          = c("NEUROG3","NEUROD1","INSM1","CHGA","TPH1"),
+    Epithelial_BEST4_pos           = c("BEST4","OTOP2","CA7","GUCA2A","CFTR"),
+    Epithelial_SELENOP_pos         = c("EPCAM","KRT19","GCNT3","LGALS4","AKR1B10"),
+    Goblet_cells                   = c("SPDEF","ATOH1","ITLN1","TFF3","FCGBP"),
+    Absorptive_Enterocytes         = c("ALDOB","APOB","SLC5A1","SLC10A2","ACE2"),
+    Inflammatory_Enterocytes       = c("IL32","HLA-DRB1","SERPINA1","SELENOP","ANPEP"),
+    Intestinal_stem_cells          = c("LGR5","OLFM4","ASCL2","SMOC2","RNF43"),
+    Paneth_cells                   = c("DEFA5","DEFA6","LYZ","REG3A","PLA2G2A"),
+    Regenerative_epithelium        = c("CPNE7","TAF4B","CYP4X1","APCDD1","PTPRO"),
+    Tuft_cells                     = c("POU2F3","TRPM5","GNAT3","CHAT","IL17RB"),
+
+Activated_chemokine_monocytes = c("IL1B","CXCL10","CXCL11","ACOD1","AQP9"),
+  cDC1                          = c("XCR1","CLEC9A","BATF3","CADM1","WDFY4"),
+  cDC2                          = c("CD1C","FCER1A","CLEC10A","CD1E","S100Z"),
+  Inflam_MoDerivedMQ         = c("CCR2","FCN1","CX3CR1","CLEC7A","CSF1R"),
+  IFN_activated_MQ              = c("GPNMB","C1QC","APOE","TMEM119","CCL18"),
+  Inflammatory_migDC            = c("LAMP3","CCR7","CCL19","FSCN1","IDO1"),
+  Inflammatory_monocytes        = c("S100A8","S100A9","S100A12","VCAN","OLR1"),
+  Inflammatory_MQ               = c("CD163","MRC1","FOLR2","C1QA","LYVE1"),
+  migDC                         = c("AIRE","RELN","CD83","S1PR1","NPTX1"),
+  pDC                           = c("CLEC4C","LILRA4","GZMB","TCF4","IL3RA"),
+  Post_inflammatory_MQ          = c("TIMD4","ADAMDEC1","PLA2G2D","ENPP2","A2M"),
+  Proliferating_myeloid         = c("MKI67","TOP2A","BIRC5","CCNA2","CDK1"),
+
+PC_IgA = c("IGHA1", "IGHA2", "JCHAIN", "CCR10", "CCR9"),
+  PC_IgG = c("IGHG1", "IGHG2", "IGHG3", "IGHG4", "XBP1"),
+
+Proliferating_B_cells = c("CD19", "MS4A1", "CD79A", "BANK1", "PAX5"),
+  Proliferating_T_cells = c("CD3D", "CD3E", "TRAC", "TRBC1", "CD4"),
+
+  Epithelial_associated_Fibroblasts = c("PDGFRA", "ITGA11", "POSTN", "WNT5A", "CXCL14"),
+  Glia = c("SOX10", "PLP1", "MPZ", "PTPRZ1", "S100B"),
+  Homeostatic_Fibroblasts = c("DCN", "LUM", "DPT", "SVEP1", "COL6A5"),
+  Homeostatic_pericytes = c("MYH11", "ACTA2", "TAGLN", "RERGL", "NOTCH3"),
+  Inflammatory_Fibroblasts_LP = c("CXCL1", "CXCL6", "CCL13", "CCL8", "ADAMDEC1"),
+  Inflammatory_pericytes = c("PDGFRB", "RGS5", "ABCC9", "KCNJ8", "HIGD1B"),
+  Myofibroblasts = c("ACTG2", "CNN1", "LMOD1", "MYOCD", "MFAP5"),
+  Stromal_organizer_cells = c("CXCL13", "CCL19", "CCL21", "FDCSP", "TNFSF13B"),
+
+CD4_CTL      = c("IL26", "IL22", "CXCR6", "CSF2", "IL17F"),
+  CD4_Naive    = c("CCR7", "SELL", "TCF7", "LEF1", "MAL"),
+  CD4_Tcm      = c("CXCR5", "CXCL13", "ICOS", "IL21", "SH2D4A"),
+  CD4_Th17     = c("IL17A", "CCR6", "CCL20", "RORA", "IL22RA2"),
+  CD4_Treg     = c("FOXP3", "IL2RA", "CTLA4", "CCR8", "LRRC32"),
+  
+  CD8_MAIT     = c("KLRB1", "ZBTB16", "IL18RAP", "TRDV2", "TRGV9"),
+  CD8_Memory   = c("CCL5", "ITGAE", "RUNX3", "CD160", "IL7R"),
+  CD8_Naive    = c("CD8A", "CD8B", "SFRP5", "RGS10", "NOG"),
+  CD8_Tcm      = c("ZNF683", "KIR3DL3", "KLRD1", "XCL1", "XCL2"),
+  CD8_Tmk      = c("EOMES", "PDCD1", "LAG3", "KLRG1", "TNFRSF9"),
+  
+  ILC          = c("KIT", "NCR2", "RORC", "IL23R", "SH2D1B"),
+  NK_cells     = c("NCAM1", "NKG7", "PRF1", "GZMB", "KLRF1"),
+  Proliferating = c("MCPH1", "DDX58", "DDX60L", "RSAD1", "CDC23")
+)
+
+```
+
+# Updated annotations
+
+```{r}
+new_md <-  gut_all_cells_filt@meta.data %>% 
+  mutate(annotations_coarse = ifelse(annotations_fine == "Transitional Enterocytes", "Enterocytes", annotations_coarse)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "Transitional Enterocytes", "Absorptive enterocytes", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "Homeostatic Enterocytes", "Absorptive enterocytes", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "Inflammatory Fibroblasts LP", "Inflammatory fibroblasts", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "Homeostatic monocytes", "Inflammatory Mo-derived MQ", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "Activated chemokine-producing monocytes", "Activated monocytes", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "CD8 Tmk", "CD8 Tex", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "CD8 Tcm", "Tmem", annotations_fine)) %>% 
+  mutate(annotations_fine = ifelse(annotations_fine == "Inflammatory Fibroblasts LP", "Inflammatory fibroblasts", annotations_fine)) 
+  
+
+new_md %>% group_by(annotations_main, annotations_coarse, annotations_fine, source) %>% tally() %>% 
+  arrange(desc(n)) %>% pivot_wider(names_from = source, values_from = n, values_fill = 0) %>% 
+  arrange(annotations_main, annotations_coarse, annotations_fine)
+
+table_annotations <- new_md %>% group_by(annotations_main, annotations_coarse, annotations_fine, source) %>% tally() %>% 
+  arrange(desc(n)) %>% pivot_wider(names_from = source, values_from = n, values_fill = 0) %>% 
+  arrange(annotations_main, annotations_coarse, annotations_fine)
+
+
+write.csv(table_annotations, "fig4_supp_table_annots.csv")
+```
+
+```{r}
+write.csv(new_md, "ligand_receptor/table_updated_annotations_metadata.csv")
+```
+
+# Correlation analysis
+
+```{r}
+new_md$source %>% table
+```
+
+```{r}
+
+is.na(new_md$sample_id) %>% table
+
+corr_thomas <- new_md %>% dplyr::filter(source == "Thomas")
+
+is.na(corr_thomas$sample_id) %>% table
+ corr_thomas$sample_id %>% table
+ 
+ 
+corr_thomas <- new_md %>% dplyr::filter(source == "Thomas") %>% 
+  group_by(annotations_fine, sample_id) %>% 
+  tally()
+
+thomas_cd4_ctl <- corr_thomas %>% 
+  dplyr::filter(annotations_fine == "CD4 CTL") %>% 
+  ungroup %>% 
+  dplyr::select(sample_id, n_cd4_ctl = n)
+
+thomas_cd4_ctl
+
+
+stat_thomas <- corr_thomas %>% 
+  dplyr::filter(annotations_fine != "CD4 CTL") %>% 
+  left_join(thomas_cd4_ctl)
+
+
+stat_thomas <- stat_thomas %>% 
+  group_by(annotations_fine) %>% 
+  rstatix::cor_test(n, n_cd4_ctl)
+
+stat_thomas %>% arrange(p)
+
+stat_thomas$source <- "Thomas"
+```
+
+```{r}
+
+corr_3p <- new_md %>% dplyr::filter(source == "PREDICT 3p")
+
+is.na(corr_3p$patient) %>% table
+
+ corr_3p$patient %>% table
+ 
+ 
+corr_3p <- new_md %>% dplyr::filter(source == "PREDICT 3p") %>% 
+  group_by(annotations_fine, patient) %>% 
+  tally()
+
+corr_3p
+
+p3p_cd4_ctl <- corr_3p %>% 
+  dplyr::filter(annotations_fine == "CD4 CTL") %>% 
+  ungroup %>% 
+  dplyr::select(patient, n_cd4_ctl = n)
+
+p3p_cd4_ctl
+
+
+stat_3p <- corr_3p %>% 
+  dplyr::filter(annotations_fine != "CD4 CTL") %>% 
+  left_join(p3p_cd4_ctl)
+
+
+stat_3p <- stat_3p %>% 
+  group_by(annotations_fine) %>% 
+  rstatix::cor_test(n, n_cd4_ctl)
+
+stat_3p %>% arrange(p)
+
+stat_3p$source <- "PREDICT 3p"
+```
+
+```{r}
+
+is.na(new_md$sample_id) %>% table
+
+corr_thomas <- new_md %>% dplyr::filter(source == "Thomas")
+
+is.na(corr_thomas$sample_id) %>% table
+ corr_thomas$sample_id %>% table
+ 
+ 
+corr_thomas <- new_md %>% dplyr::filter(source == "Thomas") %>% 
+  group_by(annotations_fine, sample_id) %>% 
+  tally()
+
+thomas_cd4_ctl <- corr_thomas %>% 
+  dplyr::filter(annotations_fine == "CD4 CTL") %>% 
+  ungroup %>% 
+  dplyr::select(sample_id, n_cd4_ctl = n)
+
+thomas_cd4_ctl
+
+
+stat_thomas <- corr_thomas %>% 
+  dplyr::filter(annotations_fine != "CD4 CTL") %>% 
+  left_join(thomas_cd4_ctl)
+
+
+stat_thomas <- stat_thomas %>% 
+  group_by(annotations_fine) %>% 
+  rstatix::cor_test(n, n_cd4_ctl)
+
+stat_thomas %>% arrange(p)
+
+stat_thomas$source <- "Thomas"
+```
+
+```{r}
+
+corr_5p <- new_md %>% dplyr::filter(source == "PREDICT 5p")
+
+is.na(corr_5p$sample) %>% table
+
+ corr_5p$sample %>% table
+ 
+ 
+corr_5p <- new_md %>% dplyr::filter(source == "PREDICT 5p") %>% 
+  group_by(annotations_fine, sample) %>% 
+  tally()
+
+corr_5p
+
+p5p_cd4_ctl <- corr_5p %>% 
+  dplyr::filter(annotations_fine == "CD4 CTL") %>% 
+  ungroup %>% 
+  dplyr::select(sample, n_cd4_ctl = n)
+
+p5p_cd4_ctl
+
+
+stat_5p <- corr_5p %>% 
+  dplyr::filter(annotations_fine != "CD4 CTL") %>% 
+  left_join(p5p_cd4_ctl)
+
+
+stat_5p <- stat_5p %>% 
+  group_by(annotations_fine) %>% 
+  rstatix::cor_test(n, n_cd4_ctl)
+
+stat_5p %>% arrange(p)
+
+stat_5p$source <- "PREDICT 5p"
+```
+
+## All correlations together
+
+```{r}
+stst_all <- rbind(stat_3p, stat_5p, stat_thomas)
+
+stst_all %>% arrange(p)
+
+annots <- new_md %>% dplyr::select(annotations_fine, annotations_main) %>% unique
+
+annots
+
+stst_all %>% 
+  mutate(signif = ifelse(p*62<0.05,"Yes","No")) %>% 
+  left_join(annots) %>% 
+  ggplot(aes(x = cor, y = reorder(annotations_fine, X = cor, FUN = mean, decreasing = F))) +
+  geom_boxplot(outlier.shape = NA, aes(color = annotations_main, fill = annotations_main), alpha = 0.4) +
+  geom_point(aes(color = annotations_main, shape = signif, size = -log(p, base = 10))) +
+  scale_shape_manual(values = c(15,16)) +
+  scale_size(range = c(0.5,3)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial")) +
+  ylab("")
+
+library(svglite)
+ggsave("ligand_receptor/boxplot_correlation.svg", width = 14, height = 30, units = "cm")
+ggsave("ligand_receptor/boxplot_correlation.png", width = 14, height = 30, units = "cm")
+
+
+```
+
+## IL27 expression
+
+```{r}
+gut_all_cells_filt@meta.data <- new_md
+
+gut_all_cells_filt$annotations_fine_patient2 <- paste(gut_all_cells_filt$annotations_fine, gut_all_cells_filt$patient2, sep = "---")
+
+
+aggexp <- AggregateExpression(gut_all_cells_filt, assay = "RNA", group.by = "annotations_fine_patient2", return.seurat = T, 
+                              features = c('IFNG',
+'IL27',
+'IFNB1',
+'IL21',
+'IL10',
+'IFNA16',
+'TNF',
+'IFNA5',
+'IFNA2',
+'OSM',
+'IL4',
+'IFNA13',
+'IFNA14',
+'IFNK',
+'IFNA8',
+'IFNA4',
+'IL6',
+'SIGLEC14',
+'VSIG10'
+))
+
+aggexp@meta.data <- aggexp@meta.data %>% separate(annotations_fine_patient2, into = c("annotations_fine", "patient2"), 
+                                                  sep = "---", remove = F)
+
+
+patient_source <- new_md %>% dplyr::select(patient2, source) %>% unique
+
+md_to_use <- aggexp@meta.data %>% left_join(patient_source)
+
+md_to_use$IL27 <- aggexp@assays$RNA$counts[which(rownames(aggexp@assays$RNA$counts)=="IL27"),]
+
+annots
+
+md_to_use %>% 
+  left_join(annots) %>% 
+  group_by(annotations_fine, source, annotations_main) %>% 
+  summarise(mean_IL27 = mean(as.numeric(IL27))) %>% 
+  ggplot(aes(x = reorder(annotations_fine, X = mean_IL27, FUN = mean), y = mean_IL27)) +
+  geom_boxplot(outlier.shape = 0, aes(color = annotations_main, fill = annotations_main), alpha = 0.4) +
+  geom_point(aes(shape = source)) +
+  coord_flip() +
+  theme_bw() +
+  theme(text = element_text(family = "Arial")) +
+  ylab("")
+
+```
+
+# Save as h5ad
+
+```{r}
+library(SeuratDisk)
+gut_all_cells_filt_save <- gut_all_cells_filt
+
+DefaultAssay(gut_all_cells_filt_save) <- "RNA"
+gut_all_cells_filt_save@assays$integrated <- NULL
+gut_all_cells_filt_save@assays$prediction.score.id <- NULL
+gut_all_cells_filt_save <- JoinLayers(gut_all_cells_filt_save)
+
+
+```
+
+```{r}
+# Remove reductions you don't need
+gut_all_cells_filt_save@reductions <- list()
+
+# Remove neighbor graphs
+gut_all_cells_filt_save@graphs <- list()
+gut_all_cells_filt_save@neighbors <- list()
+
+# Remove misc data if not needed
+gut_all_cells_filt_save@misc <- list()
+
+
+gut_all_cells_filt_save[["RNA"]]["scale.data"] <- NULL
+
+ gut_export <- gut_all_cells_filt_save
+gut_export[["RNA"]] <- as(
+  object = gut_all_cells_filt_save[["RNA"]],
+  Class = "Assay"
+)
+
+SaveH5Seurat(
+  gut_export,
+  filename = "gut_export.h5Seurat",
+  overwrite = TRUE
+)
+
+Convert(
+  "gut_export.h5Seurat",
+  dest = "h5ad",
+  overwrite = TRUE
+)
+
+ 
+
+
+```
+
+# Glossary
+
+```{r}
+gut_all_cells_filt <- readRDS("ligand_receptor/gut_all_cells_thomas_3p_5p_integrated_filt.rds")
+```
+
+```{r}
+celltypist <- read_csv("uploaded_scp/celltypist_VN_fig4.csv")
+scimilarity <- read_csv("uploaded_scp/scimilarity_VN_fig4.csv.gz")
+
+```
+
+```{r}
+gut_all_cells_filt %>% colnames() %>% head
+```
+
+```{r}
+celltypist$bc %>% head
+
+length(celltypist$bc)
+length(colnames(gut_all_cells_filt))
+
+all.equal(celltypist$bc, colnames(gut_all_cells_filt))
+
+all.equal(celltypist$bc, scimilarity$SC_bc )
+
+all.equal(colnames(gut_all_cells_filt), scimilarity$SC_bc )
+
+
+scimilarity
+```
+
+```{r}
+new_md2 <- cbind(new_md, scimilarity)
+
+new_md2$annotations_main %>% table
+
+
+
+```
+
+```{r fig.width = 5, fig.height = 12}
+new_md2 %>% dplyr::filter(annotations_main == "B cells") %>% 
+   group_by(annotations_fine, SC_predictions_unconstrained) %>% 
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>% 
+  ggplot( aes(SC_predictions_unconstrained, annotations_fine)) + 
+  geom_point(aes(size = freq*100, colour = freq*100)) + 
+  theme_bw() + 
+  scale_size_continuous(range=c(7,12)) +
+  geom_text(aes(label = round(freq*100, digits = 1))) + 
+  scale_colour_gradient2(low = "lightskyblue", mid = "lightsteelblue2", high = "salmon", midpoint = 2) +
+theme(axis.text.x = element_text(angle = 90)) +
+  coord_flip()
+
+print(g2)
+```
+
+```{r}
+for(i in)
+```

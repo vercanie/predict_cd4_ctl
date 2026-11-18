@@ -1,0 +1,2157 @@
+---
+title: "Cell-type annotation validation — refactored reproducible workflow"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+date: "2026-10-25"
+---
+
+# Purpose and safe-output policy
+
+This document reconstructs the annotation-validation plots and tables from source objects and prediction files. Input files are read-only. Analysis outputs go to a unique `reproducibility_test_*` directory under `PREDICT/ligand_receptor/annotation_validation_BUB/reproducibility_runs/`; accepted deliverables are not overwritten. The knitted HTML report itself is placed by RStudio/R Markdown according to its normal output settings. The large filtered all-cell Seurat RDS export is disabled by default and can be enabled after the test run is reviewed.
+
+# 1. Setup and configuration
+
+```{r setup, include=FALSE}
+# Set PREDICT_PROJECT_ROOT in the environment if your project root differs.
+project_root <- normalizePath(
+  Sys.getenv("PREDICT_PROJECT_ROOT", unset = "/auto/brno2/brno2/vercanie"),
+  winslash = "/", mustWork = TRUE
+)
+knitr::opts_knit$set(root.dir = project_root)
+
+suppressPackageStartupMessages({
+  library(Seurat); library(STACAS); library(ggplot2); library(dplyr)
+  library(tidyr); library(tibble); library(purrr); library(grid); library(svglite)
+})
+
+project_paths <- list(
+  updated_annotations = file.path(project_root, "PREDICT", "ligand_receptor", "table_updated_annotations_metadata.csv"),
+  celltypist = file.path(project_root, "PREDICT", "uploaded_scp", "celltypist_VN_fig4.csv"),
+  scimilarity = file.path(project_root, "PREDICT", "uploaded_scp", "scimilarity_VN_fig4.csv.gz"),
+  gut_sub_dir = file.path(project_root, "PREDICT", "ligand_receptor")
+)
+
+# Every knit writes to a unique, isolated directory, never to accepted outputs.
+run_id <- paste0("reproducibility_test_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", Sys.getpid())
+output_root <- file.path(project_paths$gut_sub_dir, "annotation_validation_BUB", "reproducibility_runs", run_id)
+if (dir.exists(output_root)) stop("Output directory already exists: ", output_root)
+output_dirs <- list(
+  root = output_root,
+  knitr = file.path(output_root, "knitr_figures"),
+  derived_objects = file.path(output_root, "derived_objects"),
+  tables = file.path(output_root, "tables"),
+  umaps = file.path(output_root, "figure_components", "umap"),
+  markers = file.path(output_root, "figure_components", "marker_dotplots"),
+  agreement = file.path(output_root, "figure_components", "agreement")
+)
+invisible(lapply(output_dirs, dir.create, recursive = TRUE, showWarnings = FALSE))
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(
+  echo = TRUE, fig.height = 8, fig.width = 14,
+  message = FALSE, warning = TRUE, out.width = "100%",
+  fig.path = file.path(output_dirs$knitr, "figure-")
+)
+
+# Leave FALSE while testing. TRUE exports another large filtered all-cell Seurat RDS.
+export_filtered_seurat <- FALSE
+
+plot_config <- list(
+  umap_reduction = "umap", add_umap_arrows = FALSE,
+  arrow_fraction = 0.12, arrow_origin_x_fraction = 0.04,
+  arrow_origin_y_fraction = 0.06, arrow_line_cm = 0.15,
+  arrow_linewidth = 0.5, arrow_text_size = 3, plot_title_size = 12,
+  marker_assay = "RNA", marker_colour_low = "dodgerblue",
+  marker_colour_mid = "grey90", marker_colour_high = "indianred2",
+  marker_expression_midpoint = 0, percent_breaks = c(0, 50, 100),
+  marker_axis_x_size = 6, marker_axis_y_size = 6,
+  marker_legend_text_size = 6, marker_legend_title_size = 6,
+  marker_title_size = 10, marker_dot_range = c(0, 2.2),
+  agreement_selection = "cumulative", agreement_coverage = 0.95,
+  agreement_top_n = 5, keep_agreement_intermediates = FALSE,
+  agreement_dot_range = c(0, 2.2), agreement_colour_low = "grey90",
+  agreement_colour_mid = "#E53935", agreement_colour_high = "#713323",
+  agreement_colour_midpoint = 50, other_label = "Other",
+  plot_base_size = 6, plot_base_family = "Arial", plot_text_colour = "black",
+  axis_text_size = 6, facet_text_size = 6, legend_text_size = 6,
+  agreement_grid_colour = "grey92", agreement_grid_linewidth = 0.1
+)
+
+agreement_export_config <- list(
+  row_height_mm = 2.0, min_categories = 7,
+  left_labels_mm = 36, right_legend_mm = 28,
+  inter_panel_gap_mm = 4, outer_margin_mm = 4,
+  top_allowance_mm = 8, bottom_label_allowance_mm = 55,
+  initial_width_mm = 134, initial_height_mm = 75,
+  max_iter = 15, tolerance_mm = 0.05
+)
+
+input_files <- c(
+  project_paths$updated_annotations, project_paths$celltypist, project_paths$scimilarity,
+  file.path(project_paths$gut_sub_dir, paste0("gut_sub_", c(1, 2, 3, 6, 7, 8, 9, 10), ".rds")),
+  file.path(project_paths$gut_sub_dir, "gut_all_cells_thomas_3p_5p_integrated_filt.rds")
+)
+missing_files <- input_files[!file.exists(input_files)]
+if (length(missing_files)) stop("Required inputs not found:\n", paste(missing_files, collapse = "\n"))
+
+celltypist <- read.csv(project_paths$celltypist, stringsAsFactors = FALSE, check.names = FALSE)
+scimilarity <- read.csv(gzfile(project_paths$scimilarity), stringsAsFactors = FALSE, check.names = FALSE)
+updated_annotations <- read.csv(project_paths$updated_annotations, stringsAsFactors = FALSE, check.names = FALSE)
+
+metadata_names <- names(updated_annotations)
+bad_names <- is.na(metadata_names) | !nzchar(trimws(metadata_names))
+metadata_names[bad_names] <- paste0("unnamed_column_", which(bad_names))
+names(updated_annotations) <- make.unique(metadata_names)
+
+required_metadata_columns <- c("barcode", "annotations_main", "annotations_fine")
+required_celltypist_columns <- c("bc", "predicted_labels")
+required_scimilarity_columns <- c("SC_bc", "SC_predictions_unconstrained")
+if (!all(required_metadata_columns %in% names(updated_annotations))) stop("Updated annotation table lacks required columns.")
+if (!all(required_celltypist_columns %in% names(celltypist))) stop("CellTypist input lacks expected columns.")
+if (!all(required_scimilarity_columns %in% names(scimilarity))) stop("SCimilarity input lacks expected columns.")
+
+cat("Run outputs are isolated under:\n", output_root, "\n")
+
+```
+
+# 2. Shared plotting and analysis helpers
+
+## 2.1 Lineage preparation and UMAPs
+
+```{r helper-lineage-umap}
+# Apply updated annotations by barcode, preserve known original doublets,
+# optionally designate additional doublet clusters, and return both the
+# annotated object and the object used for plotting. Unknown non-doublet
+# labels fail loudly rather than being silently dropped or guessed.
+prepare_lineage <- function(object_path, main_label, doublet_clusters = NULL,
+                            label_renames = character(0),
+                            original_label_col = "annotations_fine") {
+  object <- readRDS(object_path)
+  cell_ids <- colnames(object)
+
+  meta <- updated_annotations %>%
+    dplyr::filter(
+      .data$annotations_main == main_label,
+      .data$barcode %in% cell_ids
+    ) %>%
+    dplyr::select(barcode, annotations_main, annotations_fine)
+
+  if (nrow(meta) == 0) {
+    stop("No updated metadata rows matched ", object_path,
+         " using annotations_main = '", main_label, "'.")
+  }
+  if (anyDuplicated(meta$barcode)) {
+    stop("Duplicate barcode records remain after filtering metadata for '", main_label, "'.")
+  }
+
+  idx <- match(cell_ids, meta$barcode)
+  labels <- as.character(meta$annotations_fine[idx])
+  metadata_matched <- !is.na(idx)
+
+  # Apply only explicit, already discussed display-name updates.
+  if (length(label_renames) > 0) {
+    for (old_label in names(label_renames)) {
+      labels[!is.na(labels) & labels == old_label] <- unname(label_renames[[old_label]])
+    }
+  }
+
+  doublet_mask <- rep(FALSE, length(cell_ids))
+  meta_data <- object[[]]
+  if (original_label_col %in% colnames(meta_data)) {
+    doublet_mask <- doublet_mask |
+      (!is.na(meta_data[[original_label_col]]) & as.character(meta_data[[original_label_col]]) == "Doublets")
+  }
+
+  if (!is.null(doublet_clusters)) {
+    cluster_column <- doublet_clusters$column
+    if (!cluster_column %in% colnames(meta_data)) {
+      stop("Cluster column '", cluster_column, "' not found in ", object_path)
+    }
+    doublet_mask <- doublet_mask |
+      (as.character(meta_data[[cluster_column]]) %in% as.character(doublet_clusters$clusters))
+  }
+  labels[doublet_mask] <- "Doublets"
+
+  missing_labels <- is.na(labels) | !nzchar(labels)
+  if (any(missing_labels)) {
+    example_ids <- head(cell_ids[missing_labels], 10)
+    stop(sum(missing_labels), " cells in ", object_path,
+         " had no updated annotation and were not identified as doublets. Examples: ",
+         paste(example_ids, collapse = ", "))
+  }
+
+  object$annotations_plot <- labels
+  keep_cells <- cell_ids[labels != "Doublets"]
+  clean <- subset(object, cells = keep_cells)
+
+  message(
+    main_label, ": cells in object = ", length(cell_ids),
+    "; matched updated metadata = ", sum(metadata_matched),
+    "; doublets excluded = ", sum(labels == "Doublets"),
+    "; cells retained = ", length(keep_cells)
+  )
+
+  # Return only the cleaned object and small diagnostics, not the full input
+  # object or large metadata tables, to limit memory use across lineages.
+  list(clean = clean, n_input = length(cell_ids),
+       n_metadata_matched = sum(metadata_matched),
+       n_doublets_excluded = sum(labels == "Doublets"),
+       n_retained = length(keep_cells))
+}
+
+# Standard UMAP with optional L-shaped arrows located relative to the
+# existing embedding limits. This never recomputes the embedding.
+
+plot_lineage_umap <- function(
+    object, order, title,
+    config = plot_config,
+    arrows = config$add_umap_arrows,
+    embedding_aspect_ratio = 0.8,
+        point_size = 1
+) {
+   observed <- unique(as.character(object$annotations_plot))
+   unexpected <- setdiff(observed, order)
+   if (length(unexpected) > 0) stop("Unexpected labels in ", title, ": ", paste(unexpected, collapse = ", "))
+   absent <- setdiff(order, observed)
+   if (length(absent) > 0) warning("No retained cells for expected labels in ", title, ": ", paste(absent, collapse = ", "))
+   object$annotations_plot <- factor(as.character(object$annotations_plot), levels = order)
+p <- DimPlot(
+  object,
+  reduction = config$umap_reduction,
+  group.by = "annotations_plot",
+  label = FALSE,
+    pt.size = point_size,
+  alpha = 1,
+  shuffle = TRUE,
+  seed = 42,
+  raster = TRUE,
+  raster.dpi = c(900, 900)
+) +
+    scale_color_discrete(breaks = order, drop = FALSE) +
+    guides(
+      color = guide_legend(
+        keyheight = grid::unit(3, "mm"),
+        keywidth = grid::unit(4, "mm"),
+        override.aes = list(size = 2)
+      )
+    ) +
+    theme_void() +
+    labs(
+      title = paste0(
+        title, "\nn = ", format(ncol(object), big.mark = " ")
+      )
+    ) +
+    theme(
+      # Consistent publication typography
+      text = element_text(family = config$plot_base_family),
+      plot.title = element_text(
+        size = 6,
+        face = "bold",
+        hjust = 0,
+        lineheight = 0.9
+            ),
+
+      # Compact legend, matching marker-panel spacing
+      legend.text = element_text(size = 6),
+      legend.title = element_text(size = 6),
+      legend.key.height = grid::unit(3, "mm"),
+      legend.key.width = grid::unit(4, "mm"),
+      legend.spacing.y = grid::unit(1, "mm"),
+      legend.margin = margin(0, 0, 0, 0),
+      legend.box.spacing = grid::unit(1, "mm"),
+      plot.margin = margin(2, 2, 2, 2, "mm"),
+      aspect.ratio = embedding_aspect_ratio 
+      )
+ 
+   if (isTRUE(arrows)) {
+     emb <- Seurat::Embeddings(object, config$umap_reduction)
+     x_range <- range(emb[, 1], na.rm = TRUE)
+     y_range <- range(emb[, 2], na.rm = TRUE)
+     x_span <- diff(x_range)
+    y_span <- diff(y_range)
+     x0 <- x_range[1] + config$arrow_origin_x_fraction * x_span
+    y0 <- y_range[1] + config$arrow_origin_y_fraction * y_span
+    dx <- config$arrow_fraction * x_span
+   dy <- config$arrow_fraction * y_span
+    p <- p +
+       annotate("segment", x = x0, xend = x0 + dx, y = y0, yend = y0,
+               arrow = grid::arrow(length = grid::unit(config$arrow_line_cm, "cm")),
+               linewidth = config$arrow_linewidth) +
+      annotate("segment", x = x0, xend = x0, y = y0, yend = y0 + dy,
+              arrow = grid::arrow(length = grid::unit(config$arrow_line_cm, "cm")),
+              linewidth = config$arrow_linewidth) +
+     annotate("text", x = x0 + dx / 2, y = y0 - 0.025 * y_span,
+             label = "UMAP 1", size = config$arrow_text_size) +
+     annotate("text", x = x0 - 0.02 * x_span, y = y0 + dy / 2,
+              label = "UMAP 2", angle = 90, size = config$arrow_text_size)
+ }
+ p
+}
+
+# For export, scale UMAP plot point sizes by number of cells to get consistent visual
+get_umap_point_size <- function(
+    n_cells,
+    reference_n = umap_reference_n,
+    reference_pt_size = 1,
+    min_size = 1,
+    max_size = 2.6
+) {
+  size <- reference_pt_size * (reference_n / n_cells)^0.35
+  pmin(max_size, pmax(min_size, size))
+}
+```
+
+## 2.2 Marker-gene dotplot helper
+
+```{r helper-marker-dotplot}
+# Standard marker dot plot. Marker-list names should match the displayed
+# population labels in the order vector; missing assay genes are reported.
+plot_lineage_markers <- function(
+    object, order, marker_sets,
+    config = plot_config,
+    assay = config$marker_assay,
+    extra_features = character(0),
+    square_cells = TRUE
+)  {
+  observed <- unique(as.character(object$annotations_plot))
+  unexpected <- setdiff(observed, order)
+  if (length(unexpected) > 0) stop("Unexpected labels in marker plot: ", paste(unexpected, collapse = ", "))
+  absent <- setdiff(order, observed)
+  if (length(absent) > 0) warning("No retained cells for expected marker groups: ", paste(absent, collapse = ", "))
+  missing_sets <- setdiff(order, names(marker_sets))
+  if (length(missing_sets) > 0) {
+    stop("Marker sets are missing for: ", paste(missing_sets, collapse = ", "))
+  }
+  genes <- unique(c(
+    unname(unlist(marker_sets[order], use.names = FALSE)),
+    extra_features
+  ))
+  assay_genes <- rownames(object[[assay]])
+  missing_genes <- setdiff(genes, assay_genes)
+  if (length(missing_genes) > 0) {
+    warning("Markers absent from assay '", assay, "' and omitted: ",
+            paste(missing_genes, collapse = ", "))
+  }
+  genes <- intersect(genes, assay_genes)
+  if (length(genes) == 0) stop("No requested marker genes were found in assay '", assay, "'.")
+
+  object$annotations_plot <- factor(as.character(object$annotations_plot), levels = rev(order))
+    p <- DotPlot(
+    object = object,
+    group.by = "annotations_plot",
+    features = genes,
+    assay = assay
+  ) +
+    scale_color_gradient2(
+      low = config$marker_colour_low,
+      mid = config$marker_colour_mid,
+      high = config$marker_colour_high,
+      midpoint = config$marker_expression_midpoint
+    ) +
+    scale_size(
+      range = config$marker_dot_range,
+      limits = c(0, 100),
+      breaks = config$percent_breaks
+    ) +
+    labs(
+      x = NULL, y = NULL,
+      colour = "Average Expression",
+      size = "Percent Expressed"
+    ) +
+guides(
+  size = guide_legend(
+    order = 1,
+    keyheight = grid::unit(2, "mm"),
+    keywidth = grid::unit(3, "mm")
+  ),
+  colour = guide_colourbar(
+    order = 2,
+    barheight = grid::unit(12, "mm"),
+    barwidth = grid::unit(4, "mm"),
+    ticks = FALSE
+  )
+) +
+theme(
+  axis.text.x = element_text(
+    family = "Arial",
+    angle = 90,
+    hjust = 1,
+    vjust = 0.5,
+    size = config$marker_axis_x_size
+  ),
+  axis.text.y = element_text(
+    family = "Arial",
+    size = config$marker_axis_y_size
+  ),
+  legend.text = element_text(
+    family = "Arial",
+    size = config$marker_legend_text_size
+  ),
+  legend.title = element_text(
+    family = "Arial",
+    size = config$marker_legend_title_size
+  ),
+    legend.spacing.y = grid::unit(0.5, "mm"),
+  legend.key.height = grid::unit(2, "mm"),
+  plot.title = element_text(
+    size = config$marker_title_size,
+    colour = config$plot_text_colour
+  ),
+  panel.border = element_rect(
+    colour = "black",
+    fill = NA,
+    linewidth = 0.5
+  ),
+  axis.line = element_blank(),
+  panel.grid = element_blank()
+)
+
+  if (isTRUE(square_cells)) {
+    p <- p + theme(
+      aspect.ratio = length(order) / length(genes)
+    )
+  }
+
+    # Record grid dimensions for export sizing
+attr(p, "marker_export_counts") <- list(
+  n_genes = length(genes),
+  n_populations = length(order)
+)
+
+    
+  p
+}
+```
+
+## 2.3 Agreement analysis, plotting and calibration helpers
+
+```{r helper-agreement-plot}
+# ============================================================
+# AGREEMENT PLOTS: SHARED STYLE, ADAPTIVE WIDTH, CONSISTENT ROWS
+# ============================================================
+
+agreement_export_config <- list(
+  row_height_mm = 2.0,
+  min_categories = 7,
+  left_labels_mm = 36,
+  right_legend_mm = 28,
+  inter_panel_gap_mm = 4,
+  outer_margin_mm = 4,
+  top_allowance_mm = 8,
+  bottom_label_allowance_mm = 55,
+  initial_width_mm = 134,
+  initial_height_mm = 75,
+  max_iter = 15,
+  tolerance_mm = 0.05
+)
+
+# Display-only aliases for long Celltypist and SCimilarity labels that won't fit plot.
+# Original prediction names remain unchanged for all calculations.
+prediction_display_aliases <- c(
+  "CD16-negative, CD56-bright natural killer cell, human" =
+    "CD16- CD56bright NK*",
+  "naive thymus-derived CD4-positive, alpha-beta T cell" =
+    "Thymic-naive CD4+ ab T*",
+  "naive thymus-derived CD8-positive, alpha-beta T cell" =
+    "Thymic-naive CD8+ ab T*",
+  "effector memory CD4-positive, alpha-beta T cell" =
+    "Effector memory CD4+ ab T*",
+  "activated CD4-positive, alpha-beta T cell" =
+    "Activated CD4+ ab T*",
+  "CD8-positive, alpha-beta cytotoxic T cell" =
+    "CD8+ ab cytotoxic T*",
+  "CD4-positive, alpha-beta T cell" =
+    "CD4+ ab T*",
+  "group 3 innate lymphoid cell" =
+    "ILC3*",
+  "CD4-positive helper T cell" =
+    "CD4+ helper T*",
+  "CD4-positive, alpha-beta memory T cell" =
+    "CD4+ ab memory T*",
+  "CD8-positive, alpha-beta memory T cell" =
+    "CD8+ ab memory T*",
+  "CD8-positive, alpha-beta T cell" =
+    "CD8+ ab T*",
+  
+  #renames for other lineages
+  "MMP9+ Inflammatory macrophage" = "MMP9+ Inflammatory MQ*",
+  "endothelial cell of lymphatic vessel" =
+  "lymphatic endothelial cell*"
+)
+
+# ---- Build one faceted agreement plot ----
+make_agreement_plot <- function(
+    object,
+    manual_order,
+    config = plot_config
+) {
+  comparison <- data.frame(
+    barcode = colnames(object),
+    manual = as.character(object$annotations_plot),
+    celltypist = celltypist$predicted_labels[
+      match(colnames(object), celltypist$bc)
+    ],
+    scimilarity = scimilarity$SC_predictions_unconstrained[
+      match(colnames(object), scimilarity$SC_bc)
+    ],
+    stringsAsFactors = FALSE
+  )
+
+  agreement_long <- comparison %>%
+    tidyr::pivot_longer(
+      cols = c(celltypist, scimilarity),
+      names_to = "method",
+      values_to = "prediction"
+    ) %>%
+    dplyr::filter(!is.na(prediction), !is.na(manual))
+
+  if (nrow(agreement_long) == 0) {
+    stop("No automated predictions matched the cells for this agreement plot.")
+  }
+
+  agreement_long$method <- factor(
+    agreement_long$method,
+    levels = c("celltypist", "scimilarity")
+  )
+
+  prediction_counts <- agreement_long %>%
+    dplyr::count(method, prediction, name = "n") %>%
+    dplyr::group_by(method) %>%
+    dplyr::arrange(dplyr::desc(n), prediction, .by_group = TRUE)
+
+  if (identical(config$agreement_selection, "cumulative")) {
+    top_predictions <- prediction_counts %>%
+      dplyr::mutate(
+        cumulative_fraction = cumsum(n) / sum(n)
+      ) %>%
+      dplyr::filter(
+        dplyr::lag(cumulative_fraction, default = 0) <
+          config$agreement_coverage
+      ) %>%
+      dplyr::ungroup() %>%
+      dplyr::select(method, prediction)
+
+  } else if (identical(config$agreement_selection, "top_n")) {
+    top_predictions <- prediction_counts %>%
+      dplyr::slice_head(n = config$agreement_top_n) %>%
+      dplyr::ungroup() %>%
+      dplyr::select(method, prediction)
+
+  } else {
+    stop("plot_config$agreement_selection must be 'cumulative' or 'top_n'.")
+  }
+
+  # Group predictions using original labels.
+  agreement_grouped <- agreement_long %>%
+    dplyr::left_join(
+      dplyr::mutate(top_predictions, keep = TRUE),
+      by = c("method", "prediction")
+    ) %>%
+    dplyr::mutate(
+      prediction_group = ifelse(
+        is.na(keep),
+        config$other_label,
+        prediction
+      )
+    ) %>%
+    dplyr::count(
+      method, manual, prediction_group,
+      name = "n_cells"
+    ) %>%
+    dplyr::group_by(method, manual) %>%
+    dplyr::mutate(
+      percentage = 100 * n_cells / sum(n_cells)
+    ) %>%
+    dplyr::ungroup()
+
+  # Display aliases affect only labels, never calculations.
+  # Apply aliases to either method when an original label matches.
+  agreement_grouped$prediction_display <-
+    as.character(agreement_grouped$prediction_group)
+
+  alias_idx <- match(
+    agreement_grouped$prediction_display,
+    names(prediction_display_aliases)
+  )
+
+  use_alias <- !is.na(alias_idx)
+
+  agreement_grouped$prediction_display[use_alias] <-
+    unname(prediction_display_aliases[alias_idx[use_alias]])
+
+  # Order predictions by their original frequency within each method.
+  method_orders <- agreement_grouped %>%
+    dplyr::filter(prediction_group != config$other_label) %>%
+    dplyr::group_by(method, prediction_group, prediction_display) %>%
+    dplyr::summarise(
+      total = sum(n_cells),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(
+      method,
+      dplyr::desc(total),
+      prediction_group
+    )
+
+  display_levels <- unique(c(
+    method_orders$prediction_display,
+    config$other_label
+  ))
+
+  agreement_grouped$prediction_display <- factor(
+    agreement_grouped$prediction_display,
+    levels = display_levels
+  )
+
+  manual_levels <- rev(manual_order)
+
+  agreement_grouped$manual <- factor(
+    as.character(agreement_grouped$manual),
+    levels = manual_levels
+  )
+
+  # Coverage remains based on original prediction strings.
+  coverage <- agreement_long %>%
+    dplyr::group_by(method) %>%
+    dplyr::summarise(
+      total_predictions = dplyr::n(),
+      retained_predictions = sum(
+        prediction %in% top_predictions$prediction[
+          top_predictions$method == dplyr::first(method)
+        ]
+      ),
+      retained_percent =
+        100 * retained_predictions / total_predictions,
+      .groups = "drop"
+    )
+
+  plot <- ggplot2::ggplot(
+    agreement_grouped,
+    ggplot2::aes(
+      x = prediction_display,
+      y = manual,
+      size = percentage,
+      colour = percentage
+    )
+  ) +
+    ggplot2::geom_point() +
+    ggplot2::facet_grid(
+      . ~ method,
+      scales = "free_x",
+      space = "free_x",
+      labeller = ggplot2::as_labeller(c(
+        celltypist = "CellTypist",
+        scimilarity = "SCimilarity"
+      ))
+    ) +
+    ggplot2::scale_x_discrete(drop = TRUE) +
+    ggplot2::scale_y_discrete(drop = FALSE) +
+    ggplot2::scale_colour_gradient2(
+      low = config$agreement_colour_low,
+      mid = config$agreement_colour_mid,
+      high = config$agreement_colour_high,
+      midpoint = config$agreement_colour_midpoint,
+      limits = c(0, 100),
+      breaks = config$percent_breaks,
+      name = "% of cells"
+    ) +
+    ggplot2::scale_size(
+      range = config$agreement_dot_range,
+      limits = c(0, 100),
+      breaks = config$percent_breaks,
+      name = "% of cells"
+    ) +
+    ggplot2::guides(
+      size = ggplot2::guide_legend(
+        order = 1,
+        keyheight = grid::unit(3, "mm"),
+        keywidth = grid::unit(3, "mm"),
+        override.aes = list(alpha = 1)
+      ),
+      colour = ggplot2::guide_colourbar(
+        order = 2,
+        barheight = grid::unit(18, "mm"),
+        barwidth = grid::unit(3, "mm"),
+        ticks = FALSE
+      )
+    ) +
+    ggplot2::labs(x = NULL, y = NULL) +
+    ggplot2::theme_bw(
+      base_size = 6,
+      base_family = config$plot_base_family
+    ) +
+    ggplot2::theme(
+      text = ggplot2::element_text(
+        family = config$plot_base_family,
+        colour = config$plot_text_colour
+      ),
+      axis.title = ggplot2::element_blank(),
+      axis.text.x = ggplot2::element_text(
+        angle = 90,
+        hjust = 1,
+        vjust = 0.5,
+        size = 6,
+        colour = config$plot_text_colour
+      ),
+      axis.text.y = ggplot2::element_text(
+        size = 6,
+        colour = config$plot_text_colour
+      ),
+      axis.ticks = ggplot2::element_line(
+        colour = "black",
+        linewidth = 0.25
+      ),
+      axis.ticks.length = grid::unit(1, "mm"),
+
+      # Grey facet headers; normal-weight 6 pt text.
+      strip.text = ggplot2::element_text(
+        size = 6,
+        face = "bold",
+        family = config$plot_base_family,
+        colour = config$plot_text_colour
+      ),
+      strip.background = ggplot2::element_rect(
+        fill = "grey95",
+        colour = NA
+      ),
+
+      # Transparent panel interiors with black borders.
+      panel.background = ggplot2::element_rect(
+        fill = NA,
+        colour = NA
+      ),
+      panel.border = ggplot2::element_rect(
+        fill = NA,
+        colour = "black",
+        linewidth = 0.4
+      ),
+      panel.grid.major = ggplot2::element_line(
+        colour = config$agreement_grid_colour,
+        linewidth = config$agreement_grid_linewidth
+      ),
+      panel.grid.minor = ggplot2::element_blank(),
+
+      legend.text = ggplot2::element_text(
+        size = 6,
+        family = config$plot_base_family,
+        colour = config$plot_text_colour
+      ),
+      legend.title = ggplot2::element_text(
+        size = 6,
+        family = config$plot_base_family,
+        colour = config$plot_text_colour
+      ),
+      legend.spacing.y = grid::unit(0.5, "mm"),
+      legend.key.height = grid::unit(3, "mm"),
+      legend.key.width = grid::unit(3, "mm"),
+      legend.box.spacing = grid::unit(1, "mm"),
+      legend.margin = ggplot2::margin(0, 0, 0, 0),
+      plot.margin = ggplot2::margin(2, 2, 2, 2, unit = "mm")
+    )
+
+  method_counts <- agreement_grouped %>%
+    dplyr::distinct(method, prediction_display) %>%
+    dplyr::count(method, name = "n_categories")
+
+  result <- list(
+    plot = plot,
+    coverage = coverage,
+    n_manual_rows = length(manual_levels),
+    method_counts = method_counts,
+    grouped = agreement_grouped
+  )
+
+  if (isTRUE(config$keep_agreement_intermediates)) {
+    result$comparison <- comparison
+    result$long <- agreement_long
+    result$top_predictions <- top_predictions
+  }
+
+  result
+}
+
+
+
+
+
+# ---- Measure rendered facet panels on an SVG device ----
+measure_agreement_panels_mm <- function(plot, width_mm, height_mm) {
+  tmp_svg <- tempfile(fileext = ".svg")
+
+  svglite::svglite(
+    file = tmp_svg,
+    width = width_mm / 25.4,
+    height = height_mm / 25.4
+  )
+
+  on.exit({
+    try(grDevices::dev.off(), silent = TRUE)
+    unlink(tmp_svg)
+  }, add = TRUE)
+
+  grid::grid.newpage()
+  grid::grid.draw(ggplot2::ggplotGrob(plot))
+  grid::grid.force()
+
+  viewport_names <- unique(
+    grid::grid.ls(
+      viewports = TRUE,
+      grobs = FALSE,
+      print = FALSE
+    )$name
+  )
+
+  panel_names <- grep(
+    "^panel-[0-9]+-[0-9]+\\.",
+    viewport_names,
+    value = TRUE
+  )
+
+  if (length(panel_names) < 2) {
+    stop(
+      "Expected CellTypist and SCimilarity panel viewports; found ",
+      length(panel_names), "."
+    )
+  }
+
+  panel_dims <- lapply(panel_names, function(nm) {
+    grid::seekViewport(nm)
+
+    dims <- c(
+      width_mm = grid::convertWidth(
+        grid::unit(1, "npc"), "mm", valueOnly = TRUE
+      ),
+      height_mm = grid::convertHeight(
+        grid::unit(1, "npc"), "mm", valueOnly = TRUE
+      )
+    )
+
+    grid::upViewport(0)
+
+    data.frame(
+      viewport = nm,
+      width_mm = unname(dims["width_mm"]),
+      height_mm = unname(dims["height_mm"])
+    )
+  })
+
+  do.call(rbind, panel_dims)
+}
+
+
+# ---- Calibrate and export one agreement plot ----
+calibrate_and_export_agreement <- function(
+    plot,
+    name,
+    output_dir,
+    config = agreement_export_config
+) {
+  dat <- plot$data
+
+  method_counts <- dat %>%
+    dplyr::distinct(method, prediction_display) %>%
+    dplyr::count(method, name = "n_categories")
+
+  if (!all(c("celltypist", "scimilarity") %in%
+           as.character(method_counts$method))) {
+    stop("Expected both methods in agreement plot: ", name)
+  }
+
+  min_categories <- min(method_counts$n_categories)
+
+  # Keep the normal cell size if both facets have at least 7 categories.
+  # Otherwise, expand the category slots in BOTH facets until the smaller
+  # facet has a width equivalent to 7 square-cell slots.
+  width_multiplier <- max(
+    1,
+    config$min_categories / min_categories
+  )
+
+  category_width_mm <- config$row_height_mm * width_multiplier
+
+  # Target panel dimensions are based on the rendered category slots and rows.
+  target_panel_width_mm <-
+    sum(method_counts$n_categories) * category_width_mm
+
+  n_manual <- length(unique(as.character(dat$manual)))
+  target_panel_height_mm <- n_manual * config$row_height_mm
+
+  width_mm <- target_panel_width_mm +
+    config$left_labels_mm +
+    config$right_legend_mm +
+    config$inter_panel_gap_mm +
+    config$outer_margin_mm
+
+  height_mm <- target_panel_height_mm +
+    config$top_allowance_mm +
+    config$bottom_label_allowance_mm +
+    config$outer_margin_mm
+
+  converged <- FALSE
+
+  for (i in seq_len(config$max_iter)) {
+    measured <- measure_agreement_panels_mm(
+      plot,
+      width_mm,
+      height_mm
+    )
+
+    actual_width_mm <- sum(measured$width_mm)
+    actual_height_mm <- median(measured$height_mm)
+
+    width_error <- target_panel_width_mm - actual_width_mm
+    height_error <- target_panel_height_mm - actual_height_mm
+
+    if (abs(width_error) <= config$tolerance_mm &&
+        abs(height_error) <= config$tolerance_mm) {
+      converged <- TRUE
+      break
+    }
+
+    width_mm <- width_mm + width_error
+    height_mm <- height_mm + height_error
+
+    if (!is.finite(width_mm) || !is.finite(height_mm) ||
+        width_mm <= 0 || height_mm <= 0) {
+      stop("Invalid calibrated dimensions for ", name)
+    }
+  }
+
+  measured <- measure_agreement_panels_mm(
+    plot,
+    width_mm,
+    height_mm
+  )
+
+  actual_width_mm <- sum(measured$width_mm)
+  actual_height_mm <- median(measured$height_mm)
+
+  output_file <- file.path(
+    output_dir,
+    paste0(name, "_agreement.svg")
+  )
+
+  ggplot2::ggsave(
+    filename = output_file,
+    plot = plot,
+    width = width_mm,
+    height = height_mm,
+    units = "mm",
+    device = svglite::svglite,
+    limitsize = FALSE
+  )
+
+  if (!converged) {
+    warning(
+      "Geometry did not reach tolerance for ", name,
+      ". Inspect the manifest and SVG."
+    )
+  }
+
+  data.frame(
+    lineage = name,
+    n_celltypist_categories = method_counts$n_categories[
+      method_counts$method == "celltypist"
+    ],
+    n_scimilarity_categories = method_counts$n_categories[
+      method_counts$method == "scimilarity"
+    ],
+    n_manual_rows = n_manual,
+    row_height_target_mm = config$row_height_mm,
+    min_categories = config$min_categories,
+    width_multiplier = width_multiplier,
+    category_width_target_mm = category_width_mm,
+    target_panel_width_mm = target_panel_width_mm,
+    measured_panel_width_mm = actual_width_mm,
+    target_panel_height_mm = target_panel_height_mm,
+    measured_panel_height_mm = actual_height_mm,
+    width_error_mm = actual_width_mm - target_panel_width_mm,
+    height_error_mm = actual_height_mm - target_panel_height_mm,
+    export_width_mm = width_mm,
+    export_height_mm = height_mm,
+    converged = converged,
+    file = output_file,
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+```{r initialise-agreement-results, include=FALSE}
+agreement_results <- list()
+```
+
+# 3. Lineage-specific analyses and plots
+
+## 3.1 T cells
+
+```{r t-cells-prepare}
+t_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_1.rds"),
+  main_label = "T cells",
+ label_renames = c(
+   "CD4 Tcm" = "CD4 Tcm and Tfh",
+   "CD8 Tcm" = "Tmem",
+   "Tmem" = "Tgd",
+   "CD8 Tmk" = "CD8 Tex",
+   "CD8 MAIT" = "MAIT cells",
+   "Proliferating" = "CD4 Naive"
+ )
+)
+
+t_cells <- t_prepared$clean
+rm(t_prepared)
+umap_reference_n <- ncol(t_cells)
+
+t_order <- c(
+  "CD4 Naive", "CD4 Tcm and Tfh", "CD4 Th17", "CD4 CTL", "CD4 Treg",
+  "CD8 Naive", "CD8 Memory", "CD8 Tex", "Tgd", "MAIT cells", "NK cells", "ILC"
+)
+
+plot_t_umap <- plot_lineage_umap(t_cells, t_order, "T cells", point_size = 1)
+plot_t_umap
+```
+
+```{r t-cells-markers}
+t_markers <- list(
+  "CD4 CTL" = c("IL26", "IL22", "CXCR6", "CSF2", "IL17F"),
+  "CD4 Naive" = c("CCR7", "SELL", "TCF7", "LEF1", "MAL"),
+ # "CD4 Tcm and Tfh" = c("CXCR5", "CXCL13", "ICOS", "IL21", "SH2D4A"),
+  "CD4 Tcm and Tfh" = c("CXCR5", "TOX2", "CD200", "IL6R", "FAAH2"),
+  "CD4 Th17" = c("CCR6", "CCL20", "RORA", "IL17A", "TNFSF13B"),
+  "CD4 Treg" = c("FOXP3", "IL2RA", "CTLA4", "CCR8", "LRRC32"),
+  "MAIT cells" = c("TRAV1-2", "SLC4A10", "ZBTB16", "IL18RAP", "KLRB1"),
+  "CD8 Memory" = c("CCL5", "ITGAE", "RUNX3", "CD160", "IL7R"),
+  "CD8 Naive" = c("CD8A", "CD8B", "KLF2", "NELL2", "NOG" ),
+  "Tgd" = c("TRDC", "TRGC1", "TRGC2", "TRDV1", "TRGV4"),
+  "CD8 Tex" = c("EOMES", "PDCD1", "LAG3", "KLRG1", "TNFRSF9"),
+  "ILC" = c("KIT", "NCR2", "RORC", "IL23R", "SH2D1B"),
+  "NK cells" = c("NCAM1", "NKG7", "PRF1", "GZMB", "KLRF1")
+)
+plot_t_markers <- plot_lineage_markers(t_cells, t_order, t_markers)
+plot_t_markers
+```
+
+```{r t-cells-agreement}
+t_agreement <- make_agreement_plot(t_cells, t_order)
+agreement_results[["T_cells"]] <- t_agreement
+plot_t_agreement <- t_agreement$plot
+plot_t_agreement
+t_agreement$coverage
+
+# Clear up memory
+rm(t_cells)
+```
+
+## 3.2 B cells
+
+```{r b-cells-prepare}
+b_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_2.rds"),
+  main_label = "B cells",
+  doublet_clusters = list(column = "integrated_snn_res.0.5", clusters = c("8", "10"))
+)
+b_cells <- b_prepared$clean
+rm(b_prepared)
+
+b_order <- c(
+  "Naive", "Naive IFN", "Memory", "Memory Early activated",
+  "CD21low Memory", "GC-like", "Early plasmablasts"
+)
+
+plot_b_umap <- plot_lineage_umap(b_cells, b_order, "B cells", point_size = get_umap_point_size(ncol(b_cells)))
+plot_b_umap
+```
+
+```{r b-cells-markers}
+b_markers <- list(
+  "Naive" = c("TCL1A", "IGHD", "FCER2", "SELL", "CD72"),
+  "Naive IFN" = c("STAT1", "EPSTI1", "IFI44L", "IFITM1", "MX1"),
+ "Memory" = c("CD27", "TNFRSF13B", "GPR183", "AIM2", "LINC01781"),
+  "Memory Early activated" = c("DUSP1", "JUN", "FOS", "CD69", "NR4A1"),
+  "CD21low Memory" = c("ITGAX", "FCRL4", "FCRL5", "ZBTB32", "SOX5"),
+  "GC-like" = c("AICDA", "SERPINA9", "RGS13", "POU2AF1", "LRMP"),
+  "Early plasmablasts" = c("HSPA5", "CALR", "CCND2", "MIR155HG", "IMPDH2")
+)
+plot_b_markers <- plot_lineage_markers(b_cells, b_order, b_markers)
+plot_b_markers
+```
+
+```{r b-cells-agreement}
+b_agreement <- make_agreement_plot(b_cells, b_order)
+agreement_results[["B_cells"]] <- b_agreement
+plot_b_agreement <- b_agreement$plot
+plot_b_agreement
+b_agreement$coverage
+
+
+rm(b_cells)
+```
+
+## 3.3 Endothelial cells
+
+```{r endothelial-prepare}
+endo_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_8.rds"),
+  main_label = "Endothelial cells",
+  doublet_clusters = list(column = "integrated_snn_res.0.2", clusters = "6")
+)
+endo_cells <- endo_prepared$clean
+rm(endo_prepared)
+
+endo_order <- c(
+  "Arterial endothelia", "Capillary endothelia", "Venous endothelia",
+  "HEV-like venous endothelia", "Lymphatic endothelia",
+  "Pericyte-like endothelia", "Proliferating endothelia"
+)
+plot_endo_umap <- plot_lineage_umap(endo_cells, endo_order, "Endothelial cells", point_size = get_umap_point_size(ncol(endo_cells)))
+plot_endo_umap
+```
+
+```{r endothelial-markers}
+endo_markers <- list(
+  "Arterial endothelia" = c("SOX17", "EFNB2", "HEY1", "EDN1", "GJA5"),
+  "Capillary endothelia" = c("CA4", "COL15A1", "PLVAP", "RGCC", "ESM1"),
+"Venous endothelia" = c("ADGRG6", "RAB3C", "CPE", "POSTN", "CYP1B1"),
+  "HEV-like venous endothelia" = c("ACKR1", "MADCAM1","SELP", "FUT7", "CHST4"),
+  "Lymphatic endothelia" = c("PROX1", "PDPN", "LYVE1", "CCL21", "FLT4"),
+  "Pericyte-like endothelia" = c("PDGFRB", "CSPG4", "RGS5", "NOTCH3", "KCNJ8"),
+  "Proliferating endothelia" = c("MKI67", "TOP2A", "BIRC5", "CENPA", "AURKB")
+)
+plot_endo_markers <- plot_lineage_markers(endo_cells, endo_order, endo_markers)
+plot_endo_markers
+```
+
+```{r endothelial-agreement}
+endo_agreement <- make_agreement_plot(endo_cells, endo_order)
+agreement_results[["Endothelial"]] <- endo_agreement
+plot_endo_agreement <- endo_agreement$plot
+plot_endo_agreement
+endo_agreement$coverage
+rm(endo_cells)
+```
+
+## 3.4 Epithelial cells & Enterocytes: subset, integrate and cluster
+
+The epithelial and enterocyte populations are analysed jointly to represent enterocytes and other epithelial populations in a shared embedding mirroring Fig. 4a. The two saved epithelial objects are written only to this run's isolated output directory.
+
+```{r epithelial-enterocyte-reanalysis}
+parent_path <- file.path(project_paths$gut_sub_dir, "gut_all_cells_thomas_3p_5p_integrated_filt.rds")
+subset_path <- file.path(output_dirs$derived_objects, "epithelial_combined_pre_reclustering.rds")
+epi_final_path <- file.path(output_dirs$derived_objects, "epithelial_enterocyte_combined_res02_annotated.rds")
+
+gut_parent <- readRDS(parent_path)
+# Retain metadata-only data for downstream metadata export; this avoids reloading the 65-GB parent for the CSV.
+md_original <- gut_parent[[]] |> tibble::rownames_to_column("seurat_cell_id")
+epi_combined <- subset(gut_parent, subset = annotations_main == "Epithelial cells")
+rm(gut_parent); invisible(gc())
+
+if (anyDuplicated(updated_annotations$barcode)) stop("Duplicate barcodes in updated_annotations.")
+epi_updated_meta <- updated_annotations |>
+  filter(annotations_main == "Epithelial cells", barcode %in% colnames(epi_combined)) |>
+  select(barcode, annotations_fine)
+epi_idx <- match(colnames(epi_combined), epi_updated_meta$barcode)
+if (anyNA(epi_idx) || nrow(epi_updated_meta) != ncol(epi_combined)) {
+  stop("Epithelial annotation/barcode matching failed.")
+}
+epi_combined$annotations_plot <- as.character(epi_updated_meta$annotations_fine[epi_idx])
+if (anyNA(epi_combined$annotations_plot)) stop("Some epithelial cells have missing annotations.")
+
+# Save the subsetted pre-reintegration object to the current run directory.
+saveRDS(epi_combined, subset_path, compress = FALSE)
+epi_by_source <- SplitObject(epi_combined, split.by = "source")
+rm(epi_combined, epi_updated_meta, epi_idx); invisible(gc())
+
+epi_by_source <- lapply(epi_by_source, function(x) {
+  DefaultAssay(x) <- "RNA"
+  x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000, verbose = FALSE)
+  FindVariableFeatures(x, selection.method = "vst", nfeatures = 1200, verbose = FALSE)
+})
+
+epi_integrated <- STACAS::Run.STACAS(epi_by_source, dims = 1:20)
+rm(epi_by_source); invisible(gc())
+epi_integrated <- RunUMAP(epi_integrated, dims = 1:20, seed.use = 42)
+epi_integrated <- FindNeighbors(epi_integrated, dims = 1:20)
+epi_integrated <- FindClusters(epi_integrated, resolution = c(0.2, 0.5, 0.8), random.seed = 0)
+
+# Marker discovery supports the manual annotation map. Results remain in memory only.
+DefaultAssay(epi_integrated) <- "RNA"
+Idents(epi_integrated) <- "integrated_snn_res.0.2"
+epi_combined_markers <- FindAllMarkers(
+  object = epi_integrated, assay = "RNA", only.pos = TRUE,
+  min.pct = 0.1, logfc.threshold = 0.25, test.use = "wilcox", verbose = FALSE
+)
+
+res02_final_labels <- c(
+  "0" = "Absorptive enterocytes 1",
+  "1" = "Epithelial progenitors",
+  "2" = "Stem-like progenitors",
+  "3" = "Absorptive enterocytes 2",
+  "4" = "Goblet cells",
+  "5" = "Paneth cells",
+  "6" = "Inflammatory Enterocytes",
+  "7" = "M-cell-like progenitors",
+  "8" = "Enteroendocrine cells",
+  "9" = "Tuft cells",
+  "10" = "Epithelial BEST4+"
+)
+cluster_ids <- as.character(epi_integrated$integrated_snn_res.0.2)
+if (!setequal(unique(cluster_ids), names(res02_final_labels))) {
+  stop("Resolution-0.2 cluster IDs differ from the established manual annotation map.")
+}
+epi_integrated$annotations_final_draft <- unname(res02_final_labels[cluster_ids])
+if (anyNA(epi_integrated$annotations_final_draft)) stop("Unannotated epithelial clusters remain.")
+
+epi_annotation_metadata <- tibble(
+  barcode = colnames(epi_integrated),
+  annotations_fine_updated = dplyr::recode(
+    as.character(epi_integrated$annotations_final_draft),
+    "Inflammatory Enterocytes" = "Inflammatory enterocytes"
+  )
+)
+saveRDS(epi_integrated, epi_final_path, compress = FALSE)
+cat("Subsetted epithelial object:", subset_path, "\n")
+cat("Final epithelial object:", epi_final_path, "\n")
+cat("Combined epithelial cells:", ncol(epi_integrated), "\n")
+print(sort(table(epi_integrated$annotations_final_draft), decreasing = TRUE))
+rm(epi_integrated, cluster_ids); invisible(gc())
+```
+
+
+### Combined epithelial–enterocyte: plots and manual markers
+
+```{r epithelial-prepare}
+epi_cells <- readRDS(epi_final_path)
+epi_cells$annotations_plot <- dplyr::recode(
+  as.character(epi_cells$annotations_final_draft),
+  "Inflammatory Enterocytes" = "Inflammatory enterocytes"
+)
+DefaultAssay(epi_cells) <- "RNA"
+epi_order <- c(
+  "Epithelial progenitors", "Stem-like progenitors", "M-cell-like progenitors",
+  "Absorptive enterocytes 1", "Absorptive enterocytes 2",
+  "Inflammatory enterocytes", "Epithelial BEST4+", "Goblet cells",
+  "Paneth cells", "Enteroendocrine cells", "Tuft cells"
+)
+plot_epi_umap <- plot_lineage_umap(
+  epi_cells, epi_order, "Epithelial cells",
+  point_size = get_umap_point_size(ncol(epi_cells))
+)
+plot_epi_umap
+```
+
+```{r epithelial-markers}
+epi_markers <- list(
+  "Absorptive enterocytes 1" = c("CUBN", "FABP6", "TMIGD1", "CPO", "SLC5A12"),
+  "Epithelial progenitors" = c("OLFM4", "SLC12A2", "SOX4", "HES1", "HELLS"),
+  "Stem-like progenitors" = c("LGR5", "ASCL2", "SMOC2", "RGMB", "PTPRO"),
+  "Absorptive enterocytes 2" = c("S100G", "AQP10", "SLC46A1", "TRPV6", "TMPRSS15"),
+  "Goblet cells" = c("MUC2", "SPINK4", "FCGBP", "CLCA1", "ITLN1"),
+  "Paneth cells" = c("DEFA5", "DEFA6", "REG3A", "PRSS2", "LYZ"),
+  "Inflammatory enterocytes" = c("LCN2", "NOS2", "DUOX2", "DUOXA2", "SERPINA1"),
+  "M-cell-like progenitors" = c("GP2", "SPIB", "SOX8", "SLC2A6", "PTAFR"),
+  "Enteroendocrine cells" = c("CHGA", "CHGB", "SCGN", "FEV", "TPH1"),
+  "Tuft cells" = c("GNAT3", "SH2D6", "SH2D7", "HPGDS", "CHAT"),
+  "Epithelial BEST4+" = c("BEST4", "CA7", "OTOP2", "CLCN1", "ADGRG4")
+)
+plot_epi_markers <- plot_lineage_markers(epi_cells, epi_order, epi_markers)
+plot_epi_markers
+```
+
+```{r epithelial-agreement}
+epi_agreement <- make_agreement_plot(epi_cells, epi_order)
+agreement_results[["Epithelial"]] <- epi_agreement
+plot_epi_agreement <- epi_agreement$plot
+plot_epi_agreement
+epi_agreement$coverage
+rm(epi_cells)
+invisible(gc())
+```
+
+## 3.5 Myeloid cells
+
+```{r myeloid-prepare}
+myeloid_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_6.rds"),
+  main_label = "Myeloid cells",
+  label_renames = c(
+    "migDC" = "Early migDC",
+    "Inflammatory migDC" = "Late migDC"
+  )
+)
+
+myeloid_cells <- myeloid_prepared$clean
+rm(myeloid_prepared)
+
+myeloid_order <- c(
+  "Activated monocytes", "Inflammatory monocytes",
+  "Inflammatory Mo-derived MQ", "Inflammatory MQ",
+  "IFN-activated MQ", "Post-inflammatory MQ",
+  "cDC1", "cDC2",
+  "Early migDC", "Late migDC",
+  "pDC", "Proliferating myeloid"
+)
+
+plot_myeloid_umap <- plot_lineage_umap(myeloid_cells, myeloid_order, "Myeloid cells", point_size = get_umap_point_size(ncol(myeloid_cells)))
+plot_myeloid_umap
+```
+
+```{r myeloid-markers}
+myeloid_markers <- list(
+  "Activated monocytes" = c("IL1B", "CXCL10", "CXCL11", "ACOD1", "AQP9"),
+  "Inflammatory monocytes" = c("S100A8", "S100A9", "S100A12", "VCAN", "OLR1"),
+  "Inflammatory Mo-derived MQ" = c( "CCR2", "OLR1", "FCGR1A", "C5AR1", "AREG"),
+  "Inflammatory MQ" = c("CD163", "MRC1", "FOLR2", "C1QA", "LYVE1"),
+ "IFN-activated MQ" = c("STAT1", "GPNMB", "IFI6", "APOE", "APOC1"),
+  "Post-inflammatory MQ" = c("TIMD4", "ADAMDEC1", "PLA2G2D", "ENPP2", "A2M"),
+  "cDC1" = c("XCR1", "CLEC9A", "BATF3", "CADM1", "WDFY4"),
+  "cDC2" = c("CD1C", "FCER1A", "CLEC10A", "CD1E", "S100Z"),
+  "Early migDC" = c("CCR7", "CD80", "CD86", "CD83", "CD200"),
+  "Late migDC" = c(  "FSCN1", "CCL19", "LAMP3", "CCL22", "EBI3"),
+  "pDC" = c("CLEC4C", "LILRA4", "GZMB", "TCF4", "IL3RA"),
+  "Proliferating myeloid" = c("MKI67", "TOP2A", "BIRC5", "CCNA2", "CDK1")
+)
+plot_myeloid_markers <- plot_lineage_markers(myeloid_cells, myeloid_order, myeloid_markers)
+plot_myeloid_markers
+```
+
+```{r myeloid-agreement}
+myeloid_agreement <- make_agreement_plot(myeloid_cells, myeloid_order)
+agreement_results[["Myeloid"]] <- myeloid_agreement
+plot_myeloid_agreement <- myeloid_agreement$plot
+plot_myeloid_agreement
+myeloid_agreement$coverage
+rm(myeloid_cells)
+```
+
+## 3.6 Stromal cells
+
+```{r stromal-prepare}
+stromal_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_7.rds"),
+  main_label = "Stromal cells",
+  label_renames = c(
+    "Homaostatic Fibroblasts" = "Lamina propria fibroblasts S1",
+    "Epithelial-associated Fibroblasts" = "Epithelial-associated fibroblasts S2",
+    "Stromal organizer cells" = "Submucosal and FRC-like fibroblasts S3+S4",
+    "Homaostatic pericytes" = "Contractile pericytes",
+    "Inflammatory pericytes" = "Angiogenic pericytes"
+    
+  )
+)
+stromal_cells <- stromal_prepared$clean
+rm(stromal_prepared)
+
+stromal_order <- c(
+  "Lamina propria fibroblasts S1", "Epithelial-associated fibroblasts S2",
+  "Inflammatory fibroblasts", "Submucosal and FRC-like fibroblasts S3+S4", "Myofibroblasts",
+  "Contractile pericytes", "Angiogenic pericytes", "Glia"
+)
+plot_stromal_umap <- plot_lineage_umap(stromal_cells, stromal_order, "Stromal cells", point_size = get_umap_point_size(ncol(stromal_cells)))
+plot_stromal_umap
+```
+
+```{r stromal-markers}
+stromal_markers <- list(
+  "Lamina propria fibroblasts S1" = c("DCN","LUM","ADAMDEC1", "ABCA8", "WNT4"),
+  "Epithelial-associated fibroblasts S2" = c("BMP2", "BMP4", "POSTN", "WNT5A", "F3"),
+  "Inflammatory fibroblasts" = c("CXCL1", "CXCL6", "CCL13", "NFKBIZ", "IL6"),
+  "Submucosal and FRC-like fibroblasts S3+S4" = c( "RSPO3", "GREM1", "C3", "CCL19", "CCL21"),
+  "Myofibroblasts" = c("ACTG2", "CNN1", "LMOD1", "MYOCD", "MFAP5"),
+  "Contractile pericytes" = c("ACTA2", "MYH11", "TAGLN","MYL9", "PLN"),
+  "Angiogenic pericytes" = c( "RGS5", "PDGFRB", "CSPG4","ANGPT2", "ENPEP"),
+  "Glia" = c("SOX10", "PLP1", "MPZ", "PTPRZ1", "S100B")
+)
+
+plot_stromal_markers <- plot_lineage_markers(stromal_cells, stromal_order, stromal_markers)
+plot_stromal_markers
+```
+
+```{r stromal-agreement}
+stromal_agreement <- make_agreement_plot(stromal_cells, stromal_order)
+agreement_results[["Stromal"]] <- stromal_agreement
+plot_stromal_agreement <- stromal_agreement$plot
+plot_stromal_agreement
+stromal_agreement$coverage
+rm(stromal_cells)
+```
+
+## 3.7 Mast cells
+
+There is a single retained manual mast-cell population. An UMAP is omitted because it would colour all retained cells identically; this section retains a lineage-marker plot and agreement plot.
+
+```{r mast-cells-prepare}
+mast_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_9.rds"),
+  main_label = "Mast cells",
+  doublet_clusters = list(column = "integrated_snn_res.0.2", clusters = c("3", "4", "6", "7", "8"))
+)
+mast_cells <- mast_prepared$clean
+rm(mast_prepared)
+mast_order <- "Mast cells"
+```
+
+```{r mast-cells-markers}
+mast_markers <- list(
+  "Mast cells" = c("TPSAB1", "CPA3", "KIT", "HDC", "MS4A2")
+)
+plot_mast_markers <- plot_lineage_markers(mast_cells, mast_order, mast_markers)
+plot_mast_markers
+```
+
+```{r mast-cells-agreement}
+mast_agreement <- make_agreement_plot(mast_cells, mast_order)
+agreement_results[["Mast"]] <- mast_agreement
+plot_mast_agreement <- mast_agreement$plot
+plot_mast_agreement
+mast_agreement$coverage
+rm(mast_cells)
+```
+
+## 3.8 Proliferating cells
+
+```{r proliferating-prepare}
+proliferating_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_10.rds"),
+  main_label = "Proliferating cells"
+)
+proliferating_cells <- proliferating_prepared$clean
+rm(proliferating_prepared)
+
+proliferating_order <- c("Proliferating B cells", "Proliferating T cells")
+plot_proliferating_umap <- plot_lineage_umap(
+  proliferating_cells, proliferating_order, "Proliferating cells",
+  point_size = get_umap_point_size(ncol(proliferating_cells))
+)
+plot_proliferating_umap
+```
+
+```{r proliferating-markers}
+proliferating_markers <- list(
+  "Proliferating B cells" = c("MS4A1", "CD79A", "CD19", "BANK1", "PAX5"),
+  "Proliferating T cells" = c("CD3D", "CD3E", "TRAC", "TRBC1", "CD4")
+)
+
+# Cell-cycle markers are appended as a shared diagnostic block for both rows.
+plot_proliferating_markers <- plot_lineage_markers(
+  proliferating_cells,
+  proliferating_order,
+  proliferating_markers,
+  extra_features = c("MKI67", "TOP2A", "BIRC5", "CCNA2", "CDK1")
+)
+plot_proliferating_markers
+```
+
+```{r proliferating-agreement}
+proliferating_agreement <- make_agreement_plot(proliferating_cells, proliferating_order)
+agreement_results[["Proliferating"]] <- proliferating_agreement
+plot_proliferating_agreement <- proliferating_agreement$plot
+plot_proliferating_agreement
+proliferating_agreement$coverage
+rm(proliferating_cells)
+```
+
+## 3.9 Plasma cells
+
+```{r plasma-cells-prepare}
+plasma_prepared <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_3.rds"),
+  main_label = "Plasma cells",
+  doublet_clusters = list(column = "integrated_snn_res.0.2", clusters = c("4", "5"))
+)
+plasma_cells <- plasma_prepared$clean
+rm(plasma_prepared)
+plasma_order <- c("PC IgA", "PC IgG")
+plot_plasma_umap <- plot_lineage_umap(plasma_cells, plasma_order, "Plasma cells", point_size = get_umap_point_size(ncol(plasma_cells)))
+plot_plasma_umap
+```
+
+```{r plasma-cells-markers}
+plasma_markers <- list(
+  "PC IgA" = c("IGHA1", "IGHA2", "JCHAIN", "CCR10", "TNFRSF13B"),
+  "PC IgG" = c("IGHG1", "IGHG2", "IGHG3", "IGHG4", "XBP1")
+)
+plot_plasma_markers <- plot_lineage_markers(plasma_cells, plasma_order, plasma_markers)
+plot_plasma_markers
+```
+
+```{r plasma-cells-agreement}
+plasma_agreement <- make_agreement_plot(plasma_cells, plasma_order)
+agreement_results[["Plasma"]] <- plasma_agreement
+plot_plasma_agreement <- plasma_agreement$plot
+plot_plasma_agreement
+plasma_agreement$coverage
+rm(plasma_cells)
+```
+
+## 3.10 Joint small lineages — Mast, Plasma, Proliferating
+
+The combined panel contains the same three lineages as the individual plots, but presents their populations together.
+
+```{r joint-small-lineages}
+small_mast <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_9.rds"),
+  main_label = "Mast cells",
+  doublet_clusters = list(column = "integrated_snn_res.0.2", clusters = c("3", "4", "6", "7", "8"))
+)$clean
+small_plasma <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_3.rds"),
+  main_label = "Plasma cells",
+  doublet_clusters = list(column = "integrated_snn_res.0.2", clusters = c("4", "5"))
+)$clean
+small_proliferating <- prepare_lineage(
+  file.path(project_paths$gut_sub_dir, "gut_sub_10.rds"),
+  main_label = "Proliferating cells"
+)$clean
+
+small_lineage_combined <- merge(
+  x = small_mast,
+  y = list(small_plasma, small_proliferating),
+  merge.data = TRUE
+)
+DefaultAssay(small_lineage_combined) <- "RNA"
+small_lineage_order <- c(
+  "Mast cells", "PC IgA", "PC IgG",
+  "Proliferating B cells", "Proliferating T cells"
+)
+small_lineage_markers <- list(
+  "Mast cells" = c("TPSAB1", "CPA3", "KIT", "HDC", "MS4A2"),
+  "PC IgA" = c("IGHA1", "IGHA2", "JCHAIN", "CCR10", "TNFRSF13B"),
+  "PC IgG" = c("IGHG1", "IGHG2", "IGHG3", "IGHG4", "XBP1"),
+  "Proliferating B cells" = c("MS4A1", "CD79A", "PAX5", "MKI67", "TOP2A"),
+  "Proliferating T cells" = c("BIRC5", "CCNA2", "CD3D", "TRAC", "CD3E")
+)
+plot_small_lineage_markers <- plot_lineage_markers(
+  small_lineage_combined, small_lineage_order, small_lineage_markers
+)
+plot_small_lineage_markers
+small_lineage_agreement <- make_agreement_plot(
+  small_lineage_combined, small_lineage_order
+)
+agreement_results[["Small_lineages"]] <- small_lineage_agreement
+plot_small_lineage_agreement <- small_lineage_agreement$plot
+plot_small_lineage_agreement
+small_lineage_agreement$coverage
+rm(small_mast, small_plasma, small_proliferating, small_lineage_combined)
+invisible(gc())
+```
+
+
+# 4. Export figure components
+
+All standalone figure files are exported once, from the plots created in the lineage sections, to this run's unique output directory.
+
+## UMAPs
+
+```{r export-umaps}
+umap_plots <- list(
+  T_cells = plot_t_umap,
+  B_cells = plot_b_umap,
+  Endothelial = plot_endo_umap,
+  Epithelial = plot_epi_umap,
+  Myeloid = plot_myeloid_umap,
+  Stromal = plot_stromal_umap,
+  Proliferating = plot_proliferating_umap,
+  Plasma_cells = plot_plasma_umap
+)
+for (plot_name in names(umap_plots)) {
+  ggplot2::ggsave(
+    filename = file.path(output_dirs$umaps, paste0(plot_name, "_umap.svg")),
+    plot = umap_plots[[plot_name]],
+    width = 90, height = 73, units = "mm",
+    device = svglite::svglite, limitsize = FALSE
+  )
+}
+```
+
+## Marker-gene dotplots
+
+```{r export-marker-dotplots}
+# ---- Standardised marker-plot export calibration ----
+
+# Master T-cell marker export dimensions (mm)
+marker_reference_width_mm  <- 184
+marker_reference_height_mm <- 60
+
+# Consistent space around the matrix for labels and legends (mm)
+marker_export_margins <- list(
+  left   = 36,
+  right  = 28,
+  top    = 8,
+  bottom = 28
+)
+
+# Count actual genes and populations in a marker plot.
+# Do not use nrow(plot$data): that counts gene-population combinations.
+get_marker_grid_counts <- function(plot) {
+  required <- c("features.plot", "id")
+
+  if (!all(required %in% names(plot$data))) {
+    stop("Plot data must contain 'features.plot' and 'id'.")
+  }
+
+  counts <- c(
+    n_genes = length(unique(as.character(plot$data$features.plot))),
+    n_populations = length(unique(as.character(plot$data$id)))
+  )
+
+  if (any(!is.finite(counts)) || any(counts < 1)) {
+    stop("Could not determine valid marker-grid dimensions.")
+  }
+
+  counts
+}
+
+# Measure the actual central plotting panel at specified device dimensions.
+measure_dot_panel_mm <- function(plot, width_mm, height_mm) {
+  tmp_svg <- tempfile(fileext = ".svg")
+
+  svglite::svglite(
+    file = tmp_svg,
+    width = width_mm / 25.4,
+    height = height_mm / 25.4
+  )
+
+  on.exit({
+    grDevices::dev.off()
+    unlink(tmp_svg)
+  }, add = TRUE)
+
+  grid::grid.newpage()
+  grid::grid.draw(ggplot2::ggplotGrob(plot))
+  grid::grid.force()
+
+  viewport_names <- grid::grid.ls(
+    viewports = TRUE,
+    grobs = FALSE,
+    print = FALSE
+  )$name
+
+  panel_name <- grep("^panel\\.", viewport_names, value = TRUE)[1]
+
+  if (is.na(panel_name)) {
+    stop("Could not find the central marker-plot viewport.")
+  }
+
+  grid::seekViewport(panel_name)
+
+  result <- c(
+    panel_width_mm = grid::convertWidth(
+      grid::unit(1, "npc"), "mm", valueOnly = TRUE
+    ),
+    panel_height_mm = grid::convertHeight(
+      grid::unit(1, "npc"), "mm", valueOnly = TRUE
+    )
+  )
+
+  if (any(!is.finite(result)) || any(result <= 0)) {
+    stop("Panel measurement returned invalid dimensions.")
+  }
+
+  result
+}
+
+# The accepted T-cell reference export
+t_reference_size <- c(width = marker_reference_width_mm, height = marker_reference_height_mm)
+
+t_reference_grid <- get_marker_grid_counts(plot_t_markers)
+
+t_reference_panel <- measure_dot_panel_mm(
+  plot_t_markers,
+  t_reference_size["width"],
+  t_reference_size["height"]
+)
+
+# Target spacing, measured from the real T-cell matrix
+marker_spacing_x_mm <- unname(
+  t_reference_panel["panel_width_mm"] / t_reference_grid["n_genes"]
+)
+
+marker_spacing_y_mm <- unname(
+  t_reference_panel["panel_height_mm"] / t_reference_grid["n_populations"]
+)
+
+print(list(
+  reference_grid = t_reference_grid,
+  reference_panel_mm = t_reference_panel,
+  target_spacing_x_mm = marker_spacing_x_mm,
+  target_spacing_y_mm = marker_spacing_y_mm
+))
+
+# Define reusable calibration and export function
+calibrate_and_export_marker <- function(
+    plot,
+    name,
+    output_dir,
+    max_iter = 8,
+    tolerance_mm = 0.05
+) {
+  counts <- get_marker_grid_counts(plot)
+
+  target_panel_width_mm <-
+    marker_spacing_x_mm * unname(counts["n_genes"])
+
+  target_panel_height_mm <-
+    marker_spacing_y_mm * unname(counts["n_populations"])
+
+  # Initial canvas: desired matrix plus shared outer margins
+  width_mm <- target_panel_width_mm +
+    marker_export_margins$left +
+    marker_export_margins$right
+
+  height_mm <- target_panel_height_mm +
+    marker_export_margins$top +
+    marker_export_margins$bottom
+
+  # Iteratively correct width from the measured rendered panel.
+  # With the square-cell aspect ratio in the marker helper,
+  # the panel height follows the width correction.
+  for (i in seq_len(max_iter)) {
+    measured <- measure_dot_panel_mm(plot, width_mm, height_mm)
+
+    width_delta <- target_panel_width_mm -
+      unname(measured["panel_width_mm"])
+
+    if (abs(width_delta) < tolerance_mm) break
+
+    width_mm <- width_mm + width_delta
+
+    if (!is.finite(width_mm) || width_mm <= 0) {
+      stop("Invalid calibrated width for ", name)
+    }
+  }
+
+  # Final measurement at the calibrated canvas dimensions
+  measured <- measure_dot_panel_mm(plot, width_mm, height_mm)
+
+  target_height_error_mm <-
+    unname(measured["panel_height_mm"]) - target_panel_height_mm
+
+  # Export with calibrated dimensions
+  output_file <- file.path(output_dir, paste0(name, "_markers.svg"))
+
+  ggplot2::ggsave(
+    filename = output_file,
+    plot = plot,
+    width = width_mm,
+    height = height_mm,
+    units = "mm",
+    device = svglite::svglite,
+    limitsize = FALSE
+  )
+
+  data.frame(
+    lineage = name,
+    n_genes = unname(counts["n_genes"]),
+    n_populations = unname(counts["n_populations"]),
+    target_panel_width_mm = target_panel_width_mm,
+    measured_panel_width_mm = unname(measured["panel_width_mm"]),
+    target_panel_height_mm = target_panel_height_mm,
+    measured_panel_height_mm = unname(measured["panel_height_mm"]),
+    height_error_mm = target_height_error_mm,
+    export_width_mm = width_mm,
+    export_height_mm = height_mm,
+    file = output_file,
+    stringsAsFactors = FALSE
+  )
+}
+
+# Export all non-T marker panels with dimensions calibrated to the T-cell reference.
+marker_output_dir <- output_dirs$markers
+marker_plots <- list(
+  T_cells = plot_t_markers,
+  B_cells = plot_b_markers,
+  Endothelial = plot_endo_markers,
+  Myeloid = plot_myeloid_markers,
+  Stromal = plot_stromal_markers,
+  Epithelial = plot_epi_markers,
+  Small_lineages = plot_small_lineage_markers
+)
+other_marker_plots <- marker_plots[names(marker_plots) != "T_cells"]
+marker_export_manifest <- do.call(
+  rbind,
+  lapply(names(other_marker_plots), function(nm) {
+    calibrate_and_export_marker(
+      plot = other_marker_plots[[nm]], name = nm, output_dir = marker_output_dir
+    )
+  })
+)
+write.csv(
+  marker_export_manifest,
+  file.path(marker_output_dir, "marker_export_manifest.csv"),
+  row.names = FALSE
+)
+print(marker_export_manifest[, c(
+  "lineage", "n_genes", "n_populations", "measured_panel_width_mm",
+  "measured_panel_height_mm", "height_error_mm", "export_width_mm", "export_height_mm"
+)], row.names = FALSE)
+
+# Re-export t markers to fit with others
+
+# Match the established marker-panel grid spacing from the batch report
+marker_spacing_x_mm <- 2.0013
+marker_spacing_y_mm <- 2.0013
+
+# T-cell marker plot grid counts
+t_grid <- get_marker_grid_counts(plot_t_markers)
+
+# Target central matrix dimensions
+t_target_panel_width_mm <-
+  marker_spacing_x_mm * (t_grid["n_genes"] - 1)
+
+t_target_panel_height_mm <-
+  marker_spacing_y_mm * (t_grid["n_populations"] - 1)
+
+# Measure current T-cell matrix at its previous master dimensions
+t_panel <- measure_dot_panel_mm(
+  plot_t_markers,
+  184,
+  60
+)
+
+# Adjust the canvas to match the other panels' matrix spacing
+t_width_final_mm <-
+  184 +
+  t_target_panel_width_mm -
+  unname(t_panel["panel_width_mm"])
+
+t_height_final_mm <-
+  60 +
+  t_target_panel_height_mm -
+  unname(t_panel["panel_height_mm"])
+
+print(c(
+  genes = t_grid["n_genes"],
+  populations = t_grid["n_populations"],
+  target_panel_width_mm = t_target_panel_width_mm,
+  measured_panel_width_mm = t_panel["panel_width_mm"],
+  target_panel_height_mm = t_target_panel_height_mm,
+  measured_panel_height_mm = t_panel["panel_height_mm"],
+  export_width_mm = t_width_final_mm,
+  export_height_mm = t_height_final_mm
+))
+
+ggplot2::ggsave(
+  filename = file.path(marker_output_dir, "T_cells_markers.svg"),
+  plot = plot_t_markers,
+  width = as.numeric(t_width_final_mm),
+  height = as.numeric(t_height_final_mm),
+  units = "mm",
+  device = svglite::svglite,
+  limitsize = FALSE
+)
+```
+
+## Agreement plots and coverage summary
+
+```{r export-agreement-plots}
+agreement_export_names <- c(
+  "T_cells", "B_cells", "Endothelial", "Epithelial",
+  "Myeloid", "Stromal", "Small_lineages"
+)
+missing_agreement_results <- setdiff(agreement_export_names, names(agreement_results))
+if (length(missing_agreement_results) > 0) {
+  stop("Agreement plots not generated: ", paste(missing_agreement_results, collapse = ", "))
+}
+agreement_export_manifest <- do.call(
+  rbind,
+  lapply(agreement_export_names, function(nm) {
+    calibrate_and_export_agreement(
+      plot = agreement_results[[nm]]$plot,
+      name = nm,
+      output_dir = output_dirs$agreement
+    )
+  })
+)
+write.csv(
+  agreement_export_manifest,
+  file.path(output_dirs$agreement, "agreement_export_manifest.csv"),
+  row.names = FALSE
+)
+
+agreement_coverage_summary <- bind_rows(lapply(names(agreement_results), function(nm) {
+  x <- agreement_results[[nm]]$coverage
+  if (is.null(x)) return(NULL)
+  mutate(x, lineage = nm, .before = 1)
+}))
+write.csv(
+  agreement_coverage_summary,
+  file.path(output_dirs$tables, "agreement_prediction_coverage.csv"),
+  row.names = FALSE
+)
+print(agreement_export_manifest[, c(
+  "lineage", "n_celltypist_categories", "n_scimilarity_categories",
+  "n_manual_rows", "width_multiplier", "width_error_mm",
+  "height_error_mm", "export_width_mm", "export_height_mm", "converged"
+)], row.names = FALSE)
+```
+
+
+
+# 5. Final updated metadata and Supplementary Table 2
+
+The original all-cell metadata are retained in the Seurat object. Updated annotations are created in new columns, based on the agreed simultaneous fine-label mappings and one-to-one fine-to-coarse hierarchy. The filtered metadata and Supplementary Table 2 are written to this run's isolated output directory.
+
+```{r final-metadata-and-supplementary-table}
+# Fine-label renames are applied simultaneously to original labels.
+fine_rename_map <- tibble::tribble(
+  ~old_label, ~new_label,
+
+  # Enterocyte populations
+  "Transitional Enterocytes", "Absorptive enterocytes",
+  "Homeostatic Enterocytes", "Absorptive enterocytes",
+  "Inflammatory Enterocytes", "Inflammatory enterocytes",
+
+  # Myeloid populations
+  "Homeostatic monocytes", "Inflammatory Mo-derived MQ",
+  "Activated chemokine-producing monocytes", "Activated monocytes",
+  "Inflammatory Fibroblasts LP", "Inflammatory fibroblasts",
+  "migDC", "Early migDC",
+  "Inflammatory migDC", "Late migDC",
+
+  # T cells
+  "CD4 Tcm", "CD4 Tcm and Tfh",
+  "CD8 Tcm", "Tgd",
+  "CD8 Tmk", "CD8 Tex",
+  "CD8 MAIT", "MAIT cells",
+  "Proliferating", "CD4 Naive",
+
+  # Stromal populations
+  "Homaostatic Fibroblasts" = "Lamina propria fibroblasts S1",
+    "Epithelial-associated Fibroblasts" = "Epithelial-associated fibroblasts S2",
+    "Stromal organizer cells" = "Submucosal and FRC-like fibroblasts S3+S4",
+    "Homaostatic pericytes" = "Contractile pericytes",
+    "Inflammatory pericytes" = "Angiogenic pericytes"
+)
+stopifnot(!anyDuplicated(fine_rename_map$old_label))
+
+metadata_updated <- md_original |>
+  transmute(
+    barcode = as.character(seurat_cell_id),
+    source = as.character(source),
+    annotations_main_updated = as.character(annotations_main),
+    fine_key = as.character(annotations_fine)
+  ) |>
+  left_join(fine_rename_map, by = c("fine_key" = "old_label")) |>
+  mutate(annotations_fine_updated = coalesce(new_label, fine_key)) |>
+  select(barcode, source, annotations_main_updated, annotations_fine_updated)
+
+# The combined epithelial object is authoritative for epithelial fine labels.
+epi_idx <- match(epi_annotation_metadata$barcode, metadata_updated$barcode)
+if (anyNA(epi_idx) || length(epi_idx) != nrow(epi_annotation_metadata)) {
+  stop("Could not match all authoritative epithelial annotations to the full metadata.")
+}
+metadata_updated$annotations_main_updated[epi_idx] <- "Epithelial cells"
+metadata_updated$annotations_fine_updated[epi_idx] <- epi_annotation_metadata$annotations_fine_updated
+
+# Exactly one coarse annotation per updated fine label.
+fine_to_coarse <- tibble::tribble(
+  ~annotations_fine_updated, ~annotations_coarse_updated,
+
+  # T cells
+  "CD4 CTL", "CD4+ T cells",
+  "CD4 Naive", "CD4+ T cells",
+  "CD4 Tcm and Tfh", "CD4+ T cells",
+  "CD4 Th17", "CD4+ T cells",
+  "CD4 Treg", "CD4+ T cells",
+  "CD8 Memory", "CD8+ T cells",
+  "CD8 Naive", "CD8+ T cells",
+  "CD8 Tex", "CD8+ T cells",
+  "MAIT cells", "CD8+ T cells",
+  "Tgd", "Tgd",
+  "NK cells", "NK cells",
+  "ILC", "ILC",
+
+  # B cells
+  "CD21low Memory", "Memory B cells",
+  "Early plasmablasts", "B cells",
+  "GC-like", "GC-like B cells",
+  "Memory", "Memory B cells",
+  "Memory Early activated", "Memory B cells",
+  "Naive", "Naive B cells",
+  "Naive IFN", "Naive B cells",
+
+  # Epithelial populations
+  "Epithelial progenitors", "Epithelial",
+  "Stem-like progenitors", "Epithelial",
+  "M-cell-like progenitors", "Epithelial",
+  "Epithelial BEST4+", "Epithelial",
+  "Absorptive enterocytes 1", "Enterocytes",
+  "Absorptive enterocytes 2", "Enterocytes",
+  "Inflammatory enterocytes", "Enterocytes",
+  "Goblet cells", "Goblet cells",
+  "Paneth cells", "Paneth cells",
+  "Enteroendocrine cells", "Enteroendocrine cells",
+  "Tuft cells", "Tuft cells",
+
+  # Endothelial populations
+  "Arterial endothelia", "Blood endothelia",
+  "Capillary endothelia", "Blood endothelia",
+  "Venous endothelia", "Blood endothelia",
+  "HEV-like venous endothelia", "Blood endothelia",
+  "Lymphatic endothelia", "Lymphatic endothelia",
+  "Pericyte-like endothelia", "Pericyte-like endothelia",
+  "Proliferating endothelia", "Proliferating endothelia",
+
+  # Myeloid populations
+  "Activated monocytes", "Monocytes",
+  "Inflammatory monocytes", "Monocytes",
+  "Inflammatory Mo-derived MQ", "Macrophages",
+  "Inflammatory MQ", "Macrophages",
+  "IFN-activated MQ", "Macrophages",
+  "Post-inflammatory MQ", "Macrophages",
+  "cDC1", "Dendritic cells",
+  "cDC2", "Dendritic cells",
+  "Early migDC", "Dendritic cells",
+  "Late migDC", "Dendritic cells",
+  "pDC", "Dendritic cells",
+  "Proliferating myeloid", "Proliferating myeloid",
+
+  # Stromal populations
+  "Homeostatic fibroblasts", "Fibroblasts",
+  "Epithelial-associated fibroblasts", "Fibroblasts",
+  "Inflammatory fibroblasts", "Fibroblasts",
+  "Stromal organizer cells", "Fibroblasts",
+  "Myofibroblasts", "Fibroblasts",
+  "Homeostatic pericytes", "Pericytes",
+  "Inflammatory pericytes", "Pericytes",
+  "Glia", "Glia",
+
+  # Other lineages
+  "Mast cells", "Mast cells",
+  "PC IgA", "PC IgA",
+  "PC IgG", "PC IgG",
+  "Proliferating B cells", "Proliferating B cells",
+  "Proliferating T cells", "Proliferating T cells"
+)
+stopifnot(!anyDuplicated(fine_to_coarse$annotations_fine_updated))
+unmapped_fine <- setdiff(unique(metadata_updated$annotations_fine_updated), fine_to_coarse$annotations_fine_updated)
+if (length(unmapped_fine) > 0) stop("Missing coarse mappings for: ", paste(unmapped_fine, collapse = ", "))
+
+fine_to_main <- metadata_updated |> distinct(annotations_fine_updated, annotations_main_updated)
+ambiguous_main <- fine_to_main |> count(annotations_fine_updated, name = "n_main") |> filter(n_main != 1)
+if (nrow(ambiguous_main) > 0) stop("At least one fine label maps to multiple main labels.")
+
+metadata_updated <- metadata_updated |>
+  left_join(fine_to_coarse, by = "annotations_fine_updated") |>
+  select(barcode, source, annotations_main_updated, annotations_coarse_updated, annotations_fine_updated)
+stopifnot(nrow(metadata_updated) == nrow(md_original), !anyDuplicated(metadata_updated$barcode), !anyNA(metadata_updated))
+
+# Exclude cluster 8 and 10 barcodes from the ORIGINAL B-cell subset only.
+b_input <- readRDS(file.path(project_paths$gut_sub_dir, "gut_sub_2.rds"))
+b_cluster_col <- "integrated_snn_res.0.5"
+if (!b_cluster_col %in% colnames(b_input[[]])) stop("Original B-cell input lacks ", b_cluster_col)
+b_doublet_barcodes <- colnames(b_input)[as.character(b_input[[b_cluster_col, drop = TRUE]]) %in% c("8", "10")]
+cells_to_remove <- intersect(b_doublet_barcodes, metadata_updated$barcode)
+if (length(b_doublet_barcodes) != 7803L || length(cells_to_remove) != 7803L) {
+  stop("Expected 7,803 original cluster-8/10 cells; found ", length(cells_to_remove), " in the full metadata.")
+}
+rm(b_input)
+metadata_final <- metadata_updated |> filter(!barcode %in% cells_to_remove)
+stopifnot(nrow(metadata_final) == 1006165L)
+
+# Per-cell metadata CSV: barcode, source, and the three UPDATED annotation fields.
+metadata_csv_path <- file.path(output_dirs$tables, "per_cell_annotation_metadata_updated.csv")
+write.csv(metadata_final, metadata_csv_path, row.names = FALSE, na = "")
+
+# Marker strings come from the named marker lists defined in the lineage sections.
+marker_object_names <- c(
+  "t_markers", "b_markers", "endo_markers", "epi_markers", "myeloid_markers",
+  "stromal_markers", "small_lineage_markers"
+)
+available_marker_objects <- marker_object_names[
+  vapply(marker_object_names, exists, logical(1), envir = .GlobalEnv, inherits = FALSE)
+]
+marker_map <- purrr::map_dfr(available_marker_objects, function(object_name) {
+  marker_list <- get(object_name, envir = .GlobalEnv)
+  tibble(
+    annotations_fine_updated = names(marker_list),
+    Markers = vapply(marker_list, function(genes) {
+      paste(unique(unlist(genes, use.names = FALSE)), collapse = ", ")
+    }, character(1))
+  )
+}) |> distinct(annotations_fine_updated, .keep_all = TRUE)
+missing_markers <- setdiff(unique(metadata_final$annotations_fine_updated), marker_map$annotations_fine_updated)
+if (length(missing_markers) > 0) stop("Missing marker sets: ", paste(missing_markers, collapse = ", "))
+
+# Supplementary Table 2 source-specific counts.
+source_levels <- c("PREDICT 5p", "PREDICT 3p", "Thomas")
+annotation_combinations <- metadata_final |>
+  distinct(annotations_main_updated, annotations_coarse_updated, annotations_fine_updated)
+source_counts <- metadata_final |>
+  count(annotations_main_updated, annotations_coarse_updated, annotations_fine_updated, source, name = "n_cells")
+supp_table_2 <- tidyr::crossing(annotation_combinations, source = source_levels) |>
+  left_join(source_counts, by = c("annotations_main_updated", "annotations_coarse_updated", "annotations_fine_updated", "source")) |>
+  mutate(n_cells = coalesce(n_cells, 0L)) |>
+  pivot_wider(names_from = source, values_from = n_cells) |>
+  left_join(marker_map, by = "annotations_fine_updated")
+
+main_order <- c("T cells", "B cells", "Endothelial cells", "Epithelial cells", "Myeloid cells", "Stromal cells", "Mast cells", "Plasma cells", "Proliferating cells")
+fine_orders <- list(
+  "T cells" = t_order, "B cells" = b_order, "Endothelial cells" = endo_order,
+  "Epithelial cells" = epi_order, "Myeloid cells" = myeloid_order,
+  "Stromal cells" = stromal_order, "Mast cells" = mast_order,
+  "Plasma cells" = plasma_order, "Proliferating cells" = proliferating_order
+)
+supp_table_2 <- supp_table_2 |>
+  mutate(
+    main_order_key = match(annotations_main_updated, main_order),
+    fine_order_key = purrr::map2_int(annotations_main_updated, annotations_fine_updated, function(main, fine) match(fine, fine_orders[[main]]))
+  )
+missing_order <- supp_table_2 |>
+  filter(is.na(main_order_key) | is.na(fine_order_key)) |>
+  distinct(annotations_main_updated, annotations_coarse_updated, annotations_fine_updated)
+if (nrow(missing_order) > 0) {
+  print(missing_order)
+  stop("Some populations are missing from the main/fine order vectors.")
+}
+supp_table_2 <- supp_table_2 |>
+  arrange(main_order_key, fine_order_key) |>
+  select(annotations_main_updated, annotations_coarse_updated, annotations_fine_updated, Markers, all_of(source_levels))
+supp_table_path <- file.path(output_dirs$tables, "Supplementary_Table_2_updated.csv")
+write.csv(supp_table_2, supp_table_path, row.names = FALSE, na = "")
+
+# Optional large filtered Seurat export. Off by default to make validation safer.
+if (isTRUE(export_filtered_seurat)) {
+  target_obj <- readRDS(parent_path)
+  gut_all_cells_final <- subset(target_obj, cells = metadata_final$barcode)
+  metadata_to_attach <- as.data.frame(metadata_final[, c("annotations_main_updated", "annotations_coarse_updated", "annotations_fine_updated")])
+  rownames(metadata_to_attach) <- metadata_final$barcode
+  gut_all_cells_final <- SeuratObject::AddMetaData(gut_all_cells_final, metadata = metadata_to_attach)
+  seurat_output <- file.path(output_dirs$derived_objects, "gut_all_cells_thomas_3p_5p_integrated_filt_final.rds")
+  saveRDS(gut_all_cells_final, seurat_output, compress = FALSE)
+  cat("Filtered Seurat RDS:", seurat_output, "\n")
+  rm(target_obj, gut_all_cells_final, metadata_to_attach)
+  invisible(gc())
+}
+
+stopifnot(
+  sum(as.matrix(supp_table_2[, source_levels])) == nrow(metadata_final),
+  !anyNA(supp_table_2$Markers),
+  nrow(supp_table_2) == n_distinct(metadata_final$annotations_fine_updated)
+)
+cat("\n--- Run summary ---\n")
+cat("Cells after B-cell doublet exclusion:", nrow(metadata_final), "\n")
+cat("Unique fine populations:", n_distinct(metadata_final$annotations_fine_updated), "\n")
+cat("Supplementary Table 2 rows:", nrow(supp_table_2), "\n")
+cat("Cell-count total:", sum(as.matrix(supp_table_2[, source_levels])), "\n")
+cat("Metadata CSV:", metadata_csv_path, "\n")
+cat("Supplementary Table 2:", supp_table_path, "\n")
+cat("All outputs are isolated under:", output_root, "\n")
+
+rm(md_original, metadata_updated, metadata_final, epi_annotation_metadata)
+invisible(gc())
+```
+
+## Output summary
+
+```{r output-summary}
+cat("Run output root:\n", normalizePath(output_root), "\n")
+cat("UMAPs:", output_dirs$umaps, "\n")
+cat("Marker dotplots:", output_dirs$markers, "\n")
+cat("Agreement plots:", output_dirs$agreement, "\n")
+cat("Tables:", output_dirs$tables, "\n")
+cat("Derived epithelial objects:", output_dirs$derived_objects, "\n")
+cat("Large filtered all-cell Seurat RDS exported:", isTRUE(export_filtered_seurat), "\n")
+```
+

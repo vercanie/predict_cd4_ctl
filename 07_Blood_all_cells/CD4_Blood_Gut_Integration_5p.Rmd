@@ -1,0 +1,200 @@
+---
+title: "260912_CD4_Blood_Gut_Integration_5p"
+author: "Anna Morales"
+date: "2026-09-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Load data
+```{r}
+Blood_5p_CD4 <- readRDS("~/PRIMUS/data/48_lab/Project Crohn/Project Crohn Predict/Data/Datasets/Blood_CD4_5p.rds")
+Gut_5p_CD4 <- readRDS("~/PRIMUS/data/48_lab/Project Crohn/Project Crohn Predict/Data/Datasets/Gut_CD4_5p.rds")
+```
+
+
+```{r}
+head(Blood_5p_CD4@meta.data) 
+```
+
+```{r}
+cols_to_keep <- c("orig.ident", "nCount_RNA", "nFeature_RNA", "participant_id", "diagnosis", "timepoint", "age", "sex", "tissue", "layer", "antitnf_response") 
+Blood_5p_CD4@meta.data <- Blood_5p_CD4@meta.data[, cols_to_keep]
+
+head(Blood_5p_CD4@meta.data)
+```
+
+
+
+```{r}
+head(Gut_5p_CD4@meta.data)
+```
+
+
+```{r}
+cols_to_keep <- c("orig.ident", "nCount_RNA", "nFeature_RNA", "participant_id", "diagnosis", "timepoint",  "age", "sex", "tissue", "layer", "antitnf_response") 
+Gut_5p_CD4@meta.data <- Gut_5p_CD4@meta.data[, cols_to_keep]
+
+head(Gut_5p_CD4@meta.data)
+```
+
+
+Add unique cell names
+```{r}
+Blood_5p_CD4 <- RenameCells(Blood_5p_CD4, add.cell.id = "Blood")
+Gut_5p_CD4   <- RenameCells(Gut_5p_CD4, add.cell.id = "Gut")
+```
+
+
+
+```{r}
+DefaultAssay(Blood_5p_CD4) <- "RNA"
+DefaultAssay(Gut_5p_CD4) <- "RNA"
+
+# Combine the two datasets
+Blood_Gut <- merge(
+  Blood_5p_CD4,
+  y = Gut_5p_CD4
+)
+```
+
+
+# Integration based on participant_id and tissue
+```{r}
+Blood_Gut$integration_group <- paste(
+  Blood_Gut$tissue_general,
+  Blood_Gut$participant_id,
+  sep = "_"
+)
+
+table(Blood_Gut$integration_group)
+```
+
+
+```{r}
+datasets <- SplitObject(
+  Blood_Gut,
+  split.by = "integration_group"
+)
+
+length(datasets)
+names(datasets)
+```
+
+
+```{r}
+datasets <- lapply(
+  datasets,
+  NormalizeData
+)
+
+datasets <- lapply(
+  datasets,
+  FindVariableFeatures,
+  selection.method = "vst",
+  nfeatures = 1000
+)
+```
+
+
+```{r}
+# STACAS integration
+Blood_Gut_stacas <- Run.STACAS(
+  datasets,
+  anchor.features = 1000
+)
+
+saveRDS(Blood_Gut_stacas, "~/PRIMUS/data/48_lab/Project Crohn/Project Crohn Predict/Data/Datasets/Integrated_Blood_Gut_CD4_5p_new.rds")
+```
+
+
+```{r}
+Blood_Gut_stacas_5p <- readRDS("~/PRIMUS/data/48_lab/Project Crohn/Project Crohn Predict/Data/Datasets/Integrated_Blood_Gut_CD4_5p_new.rds")
+```
+
+
+```{r}
+Blood_Gut_stacas_5p <- RunPCA(
+  Blood_Gut_stacas_5p,
+  npcs = 30
+)
+```
+
+
+```{r}
+Blood_Gut_stacas_5p <- FindNeighbors(Blood_Gut_stacas_5p, dims = 1:20)
+Blood_Gut_stacas_5p <- FindClusters(Blood_Gut_stacas_5p, resolution = 0.5)
+Blood_Gut_stacas_5p <- RunUMAP(Blood_Gut_stacas_5p, dims = 1:20)
+
+
+DimPlot(Blood_Gut_stacas_5p, group.by = "tissue")
+DimPlot(Blood_Gut_stacas_5p, group.by = "participant_id")
+DimPlot(Blood_Gut_stacas_5p, label = T)
+```
+
+
+```{r fig.height=5, fig.width=10}
+DimPlot(Blood_Gut_stacas_5p, group.by = "participant_id")
+```
+
+
+
+```{r fig.height=5, fig.width=18}
+DimPlot(Blood_Gut_stacas_5p, split.by = "tissue")
+```
+
+
+```{r}
+DefaultAssay(Blood_Gut_stacas_5p) <- "RNA"
+
+FeaturePlot(Blood_Gut_stacas_5p, features = "CD4", min.cutoff = 0)
+FeaturePlot(Blood_Gut_stacas_5p, features = "CD3D", min.cutoff = 0)
+FeaturePlot(Blood_Gut_stacas_5p, features = "GZMA", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "GZMB", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "PRF1", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "CXCR6", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "IFNG", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "IL17A", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "IL26", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "TBX21", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "RORC", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "TNF", min.cutoff = 0, max.cutoff = "q99")
+FeaturePlot(Blood_Gut_stacas_5p, features = "IL2", min.cutoff = 0, max.cutoff = "q99")
+```
+
+
+
+```{r}
+FeaturePlot(Blood_Gut_stacas_5p, features = "IFIT1", min.cutoff = 0)
+```
+
+
+
+```{r}
+Idents(Blood_Gut_stacas_5p) <- Blood_Gut_stacas_5p$seurat_clusters
+
+markers <- FindAllMarkers(Blood_Gut_stacas_5p, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+```
+
+
+```{r fig.height=4, fig.width=16}
+DotPlot(Blood_Gut_stacas_5p, group.by = "seurat_clusters", 
+        features = c("CTSW", "TRDC", "TRGC1", "SCART1", "IL9R", "GZMK", "EOMES", "TIGIT", "IL10RA", "KLRK1", "JCHAIN", "FOXP3", "IKZF2", "CTLA4", "IL2RA", "CD27",  "FCRL3", "GZMA", "GZMB", "PRF1", "CCL5", "CXCR3", "CXCR6", "IL26", "IFNG", "ITGB1", "AHNAK", "PLP2", "ANXA2", "TIMP1", "GATA3", "CCR10", "NPDC1", "CXCR5", "TOX2", "PDCD1", "ICOS", "BCL6", "IL21", "CXCR4", "BATF", "TNFRSF1B", "TBC1D4", "TNFRSF18", "TNFRSF4", "PASK", "KLF2", "S1PR1", "ITGA4", "IL2", "CD69", "RORA", "RORC", "KLRB1", "IL17A", "IL23R", "ITGA1", "CCR6", "CCR7", "TCF7", "LEF1", "SELL"), assay = "RNA") +
+  scale_colour_gradientn(colors = c('dodgerblue', 'gray90', 'indianred2')) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ggtitle('Expression of selected genes in clusters')
+```
+
+
+
+```{r}
+saveRDS(Blood_Gut_stacas_5p, "~/PRIMUS/data/48_lab/Project Crohn/Project Crohn Predict/Data/Datasets/Integrated_Blood_Gut_CD4_5p_new_clustered.rds")
+```
+

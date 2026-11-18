@@ -1,0 +1,995 @@
+---
+title: "Untitled"
+author: "Veronika Niederlova"
+date: "2026-04-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(ggplot2)
+library(readxl)
+library(dplyr)
+library(cowplot)
+library(gridExtra)
+library(grid)
+library(readxl)
+library(stringr)
+library(tidyverse)
+library(patchwork)
+library(data.table)
+library(tidytext)
+
+ggtheme <- function() {
+  theme(
+    axis.text = element_text(size = 20, colour = "black"),
+    axis.title = element_text(size = 20, colour = "black"),
+    axis.line = element_line(colour = "black"),
+    text = element_text(size = 20, colour = "black"),
+    legend.text = element_text(size = 20),
+    legend.key.size =  unit(10, units = "points"),
+    title = element_text(size = 16, hjust = 1)
+    
+  )
+}
+
+setwd("H:/vercanie/CD4_CTL/FLOW/Analysis/Analysis_260407/")
+```
+
+
+
+# Freq plot
+
+```{r}
+df <- read_xlsx("R_CD4_CTL3.xlsx")
+df
+
+colnames(df)[1] ="sample"
+
+df <- df %>% separate(sample, into = c(NA, NA, "Batch","Donor", "Group"), sep = "_", remove = F)
+df$Group <- gsub(df$Group, pattern = "\\.fcs", replacement = "")
+df
+```
+
+Filter out one donor that was measured twice
+
+```{r}
+df <- df %>% dplyr::filter(!(Donor == "p51" & Batch == "Batch6"))
+
+df
+```
+
+
+```{r}
+plot_list <- list()
+
+for(i in 5:6){
+  df_filt <- df %>% select(1:4,i)
+  colnames(df_filt)[5] <- "value"
+  df_filt$value <- as.numeric(df_filt$value)
+
+  plot <- df_filt %>% ggplot(aes(x = Group,
+             y = value)) +
+  geom_boxplot(outlier.shape = NA, aes(fill = Group), alpha = 0.5) +
+          geom_dotplot(binaxis='y', stackdir='center', dotsize=0) + 
+     geom_jitter(binaxis='y', position=position_jitter(width = 0.1, height = 0.05), 
+                 size = 2.5, stackdir='center', aes(color = Group)) + 
+     theme_classic() + xlab("") +
+     #scale_color_manual(values = c("indianred2","grey70")) +
+     #scale_fill_manual(values = c("indianred2","grey70")) +
+     #geom_line(aes(group = Sample, alpha = 0.1)) +
+
+  xlab("") +  ylab("") +
+        scale_y_continuous(expand = c(0,NA), limits = c(0,NA))+
+      ggpubr::stat_compare_means(comparisons = list(c(1,2),c(1,3),c(1,4))) + 
+     ggtitle(colnames(df)[i]) + ggtheme() + 
+    theme(axis.ticks.x = element_blank()) +
+    #scale_fill_manual(values = c("grey70", "red3","#d3bc5fff")) +
+    #scale_color_manual(values = c("grey70","red3","#d3bc5fff")) +
+    Seurat::NoLegend()
+    print(plot)
+    plot_list[[i-3]] <- plot
+  
+}
+
+```
+
+
+
+```{r}
+
+df_filt
+
+
+i = 6
+df_filt <- df %>% select(1:4,i)
+  colnames(df_filt)[5] <- "value"
+  df_filt$value <- as.numeric(df_filt$value)
+
+  plot <- df_filt %>% ggplot(aes(x = factor(Group, levels = c("hd","fg","uc","cd")),
+             y = value)) +
+  geom_boxplot(outlier.shape = NA, aes(fill = Group), alpha = 0.5) +
+          geom_dotplot(binaxis='y', stackdir='center', dotsize=0) + 
+     geom_jitter(binaxis='y', position=position_jitter(width = 0.1, height = 0.05), 
+                 size = 2.5, stackdir='center', aes(color = Group)) + 
+     theme_classic() + xlab("") +
+     scale_color_manual(values = c("hd" = "#00bfc4ff", "fg" = "#7cae00ff", "uc" = "#c77cffff", "cd" = "#f8766dff")) +
+     scale_fill_manual(values = c("hd" = "#00bfc4ff", "fg" = "#7cae00ff", "uc" = "#c77cffff", "cd" = "#f8766dff")) +
+     xlab("") +  ylab("") +
+        scale_y_continuous(expand = c(0,NA), limits = c(0,NA))+
+      ggpubr::stat_compare_means(comparisons = list(c(1,4),c(2,4),c(3,4),c(1,3),c(2,3))) + 
+     ggtitle(colnames(df)[i]) + ggtheme() + 
+    theme(axis.ticks.x = element_blank()) +
+    Seurat::NoLegend()
+    print(plot)
+
+ggsave("../Analysis_260407/260413_groups.svg", width = 9, height = 10, units = "cm")
+```
+
+```{r}
+df_filt$Group %>% table()
+```
+
+
+Source data
+
+```{r}
+i <- 6
+
+df_filt <- df %>%
+  dplyr::select(1:4, i)
+
+colnames(df_filt)[5] <- "value"
+df_filt$value <- as.numeric(df_filt$value)
+
+# Save source data
+readr::write_csv2(
+  df_filt,
+  "../Analysis_260407/figures/source_data_Fig6B_groups.csv"
+)
+```
+
+Highlight representative donors
+
+```{r}
+i = 6
+df_filt <- df %>% select(1:4,i)
+  colnames(df_filt)[5] <- "value"
+  df_filt$value <- as.numeric(df_filt$value)
+
+  plot <- df_filt %>% ggplot(aes(x = factor(Group, levels = c("hd","fg","uc","cd")),
+             y = value)) +
+  geom_boxplot(outlier.shape = NA, aes(fill = Group), alpha = 0.5) +
+          geom_dotplot(binaxis='y', stackdir='center', dotsize=0) + 
+     geom_jitter(
+  aes(color = Donor %in% c("p71", "p34", "HD1", "p85"),
+      size = Donor %in% c("p71", "p34", "HD1", "p85")),
+  position = position_jitter(width = 0.1, height = 0.05, seed = 123)
+) +
+scale_color_manual(values = c("FALSE" = "grey65", "TRUE" = "red")) +
+scale_size_manual(values = c("FALSE" = 2.5, "TRUE" = 3.5)) +
+    theme_classic() + xlab("") +
+     scale_color_manual(values = c("hd" = "#00bfc4ff", "fg" = "#7cae00ff", "uc" = "#c77cffff", "cd" = "#f8766dff")) +
+     scale_fill_manual(values = c("hd" = "#00bfc4ff", "fg" = "#7cae00ff", "uc" = "#c77cffff", "cd" = "#f8766dff")) +
+     xlab("") +  ylab("") +
+        scale_y_continuous(expand = c(0,NA), limits = c(0,NA))+
+      ggpubr::stat_compare_means(comparisons = list(c(1,4),c(2,4),c(3,4),c(1,3),c(2,3))) + 
+     ggtitle(colnames(df)[i]) + ggtheme() + 
+    theme(axis.ticks.x = element_blank()) +
+    Seurat::NoLegend()
+    print(plot)
+```
+
+
+## Update metadata change
+
+```{r}
+md_5p_new <- read_csv("../predict_5p_metadata_20260819.csv")
+
+md_groups_join <- md_5p_new %>% dplyr::filter(timepoint == "T0") %>% 
+  group_by(participant_id, diagnosis) %>% tally()
+
+md_groups_join
+
+df_test_groups <- df
+
+df_test_groups
+df_test_groups <- df_test_groups %>% mutate(participant_id = if_else(nchar(Donor) == 3, gsub(df_test_groups$Donor, pattern = "^p", replacement = "001-0"), if_else(
+ nchar(Donor) == 4, gsub(df_test_groups$Donor, pattern = "^p", replacement = "001-"), Donor))) 
+
+
+df_test_groups <- df_test_groups %>% left_join(md_groups_join %>% dplyr::select(group2 = diagnosis, participant_id))
+
+
+df_test_groups %>% group_by(participant_id, group2, Group) %>% tally() 
+```
+No discrepancies in new metadata. Keep the orig plots. 
+
+
+
+
+# Correlation CD4 CTL facs vs scRNAseq
+
+### Gut
+
+```{r}
+
+library(tidyr)
+
+md_gut_5p <- read_csv("250121_Gut_5p_metadata.csv")
+
+df4 <- md_gut_5p %>% 
+  mutate(data_folder = paste(participant_id, timepoint, tissue, layer, diagnosis, sep = "_")) %>% 
+  group_by(data_folder, integrated_snn_res.0.6) %>% 
+  summarise(n = n()) %>% 
+  unique() %>% 
+  mutate(freq = n / sum(n))  %>%
+dplyr::select(-n)  %>% 
+pivot_wider(names_from = integrated_snn_res.0.6, values_from = freq, values_fill = 0)  %>% 
+tidyr::pivot_longer(!data_folder, names_to = "seurat_clusters", values_to = "freq")
+
+
+df5 <- df4 %>% 
+  pivot_wider(names_from = seurat_clusters, names_prefix = "c", values_from = freq) %>% 
+  separate(data_folder, into = c("patient", "time", "tissue", "layer", "diagnosis"), sep = "_") 
+
+df5
+
+df5 %>% 
+  dplyr::filter(time == 'T0' & layer == "LP" & tissue == "ILE") %>% 
+  ggplot(aes(x = diagnosis, y = c7)) +
+  geom_boxplot()
+
+df5
+df5 %>% dplyr::filter(substr(patient,1,3)=="003")
+
+df5$Donor <- gsub(df5$patient, pattern = "001-00", replacement = "p")
+df5$Donor <- gsub(df5$Donor, pattern = "001-0", replacement = "p")
+df5$Donor <- gsub(df5$Donor, pattern = "001-", replacement = "p")
+df5$Donor <- gsub(df5$Donor, pattern = "003-00", replacement = "p30")
+df5$Donor <- gsub(df5$Donor, pattern = "003-0", replacement = "p3")
+
+table(df5$Donor %in% df$Donor)
+table(df$Donor %in% df5$Donor)
+
+df8 <- left_join(df, dplyr::select(df5 %>% dplyr::filter(time == "T0" & layer == 'LP' & tissue == "ILE"), Donor, c7))
+
+df8
+
+
+
+colnames(df)
+```
+
+
+```{r}
+
+for(i in 5:6){
+  plt <- df8 %>% 
+  dplyr::select(cor_var = i,c7, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = c7)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() + ggtitle(colnames(df8)[i])
+  
+  print(plt)
+}
+
+
+```
+
+
+
+```{r}
+
+for(i in 5:6){
+  plt <- df8 %>% 
+    dplyr::filter(Group == "cd") %>% 
+  dplyr::select(cor_var = i,c7, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = c7)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() + ggtitle(colnames(df8)[i])
+  
+  print(plt)
+}
+
+```
+
+## Blood
+
+```{r}
+md_blood_5p <- read_csv("250113_Blood_5p_metadata.csv")
+
+
+df_bl4 <- md_blood_5p %>% 
+  mutate(data_folder = paste(participant_id, timepoint, tissue, layer, diagnosis, antitnf_response, sep = "_")) %>% 
+  group_by(data_folder, cd4_ctl) %>% 
+  summarise(n = n()) %>% 
+  unique() %>% 
+  mutate(freq = n / sum(n))  %>%
+dplyr::select(-n)  %>% 
+pivot_wider(names_from = cd4_ctl, values_from = freq, values_fill = 0)  %>% 
+pivot_longer(!data_folder, names_to = "seurat_clusters", values_to = "freq")
+
+
+df_bl5 <- df_bl4 %>% 
+  pivot_wider(names_from = seurat_clusters, names_prefix = "c", values_from = freq) %>% 
+  separate(data_folder, into = c("patient", "time", "tissue", "layer", "diagnosis", "antitnf_response"), sep = "_") 
+
+```
+
+```{r}
+df_bl5
+df_bl5 %>% dplyr::filter(substr(patient,1,3)=="003")
+
+df_bl5$Donor <- gsub(df_bl5$patient, pattern = "001-00", replacement = "p")
+df_bl5$Donor <- gsub(df_bl5$Donor, pattern = "001-0", replacement = "p")
+df_bl5$Donor <- gsub(df_bl5$Donor, pattern = "001-", replacement = "p")
+df_bl5$Donor <- gsub(df_bl5$Donor, pattern = "003-00", replacement = "p30")
+df_bl5$Donor <- gsub(df_bl5$Donor, pattern = "003-0", replacement = "p3")
+
+table(df_bl5$Donor %in% df$Donor)
+table(df$Donor %in% df_bl5$Donor)
+
+
+df
+df_bl5
+colnames(df_bl5)
+colnames(df)
+
+
+df_bl8 <- left_join(df, df_bl5 %>% 
+                      dplyr::filter(time == "T0") %>% 
+                      dplyr::select(Donor, cTRUE, antitnf_response ))
+
+df_bl8
+colnames(df_bl8)
+```
+
+
+```{r}
+df_bl8 %>% 
+  dplyr::select(cor_var = i,cTRUE, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var))
+
+
+for(i in 5:6){
+  plt <- df_bl8 %>% 
+  dplyr::select(cor_var = i,cTRUE, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = cTRUE)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() + ggtitle(colnames(df_bl8)[i])
+  
+  print(plt)
+}
+
+
+```
+
+
+
+```{r}
+
+for(i in 5:6){
+  plt <- df_bl8 %>% 
+    dplyr::filter(Group == "cd") %>% 
+  dplyr::select(cor_var = i,cTRUE, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = cTRUE)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() + ggtitle(colnames(df_bl8)[i])
+  
+  print(plt)
+}
+
+
+
+```
+
+# Correlation in blood 3p
+
+```{r}
+df_scrnaseq <- read_xlsx("../Freq_blood_3p.xlsx")
+
+
+df_scrnaseq$freq <- as.numeric(df_scrnaseq$freq)
+df_scrnaseq2 <- df_scrnaseq
+df_scrnaseq
+df_scrnaseq2
+```
+
+```{r}
+df_scrnaseq2$patient
+
+df_scrnaseq2$patient
+
+df_scrnaseq2$patient <- gsub(df_scrnaseq2$patient, pattern = "p0", replacement = "p")
+
+```
+
+
+```{r}
+colnames(df)
+```
+
+
+
+```{r}
+
+df1 <- df %>% dplyr::select(Donor, Group, 5:6)
+df2 <- df_scrnaseq2 %>% dplyr::select(Donor = patient, scrnaseq = freq)
+
+df3 <- df1 %>% left_join(df2)
+
+df3
+
+for(i in 3:4){
+  plt <- df3 %>% 
+    dplyr::filter(Group == "cd") %>% 
+  dplyr::select(cor_var = i,scrnaseq, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = scrnaseq)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() + ggtitle(colnames(df3)[i])
+  
+  print(plt)
+}
+
+
+
+
+```
+
+```{r}
+df3
+```
+```{r}
+samples_missing_5p <- df_bl8 %>% dplyr::filter(is.na(cTRUE)) %>% pull(Donor)
+```
+
+
+```{r}
+samples_missing_5p 
+```
+
+
+```{r}
+samples_avail_3p <- df3 %>% dplyr::filter(!is.na(scrnaseq)) %>% pull(Donor)
+
+
+samples_avail_3p
+
+samples_missing_5p %in% samples_avail_3p
+```
+```{r}
+df3 %>% colnames
+
+add_missing_from_3p <- df3 %>% dplyr::filter(!is.na(scrnaseq) & Donor %in% samples_missing_5p) %>% 
+  dplyr::select(Donor, Group, facs = 4, scrnaseq)
+
+add_missing_from_3p
+
+
+df_bl8 %>% colnames
+
+df_bl8
+
+cor_df <- df_bl8 %>% dplyr::select(Donor, Group, facs = 6, scrnaseq = cTRUE) %>% dplyr::filter(!is.na(scrnaseq))
+
+cor_df
+add_missing_from_3p
+
+cor_df_final <- rbind(cor_df, add_missing_from_3p)
+
+cor_df_final
+
+```
+
+```{r}
+
+ cor_df_final %>% 
+    dplyr::filter(Group == "cd") %>% 
+  dplyr::select(cor_var = facs,scrnaseq, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = scrnaseq)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() 
+  
+
+```
+
+```{r}
+df3 %>% colnames
+
+add_missing_from_3p <- df3 %>% dplyr::filter(!is.na(scrnaseq) & Donor %in% samples_missing_5p) %>% 
+  dplyr::select(Donor, Group, facs = 3, scrnaseq)
+
+add_missing_from_3p
+
+
+df_bl8 %>% colnames
+
+df_bl8
+
+cor_df <- df_bl8 %>% dplyr::select(Donor, Group, facs = 5, scrnaseq = cTRUE) %>% dplyr::filter(!is.na(scrnaseq))
+
+cor_df
+add_missing_from_3p
+
+cor_df_final <- rbind(cor_df, add_missing_from_3p)
+
+cor_df_final
+
+```
+
+```{r}
+
+ cor_df_final %>% 
+    dplyr::filter(Group == "cd") %>% 
+  dplyr::select(cor_var = facs,scrnaseq, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = scrnaseq)) +
+  geom_point(aes(color = Group)) +
+ geom_smooth(method=lm) +
+  ggpubr::stat_cor() 
+  
+
+```
+
+```{r}
+
+
+cor_df_final %>% 
+    dplyr::filter(Group == "cd") %>% 
+  dplyr::select(cor_var = facs,scrnaseq, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var)) %>% 
+  ggplot(aes(x = cor_var, y = scrnaseq)) +
+  geom_point(aes(color = Group), shape = 16, size = 2) +
+ geom_smooth(method=lm) +
+  geom_smooth(method=lm, alpha = 0.2) + ggtitle(" ") + 
+ggpubr::stat_cor(size = 7) + theme_classic() + ggtheme() 
+
+ggsave("../Analysis_260407/260413_correlation_facs_sc.svg", width = 12, height = 10, units = "cm")
+
+```
+
+Source data
+
+```{r}
+df_save <- cor_df_final %>% 
+    dplyr::filter(Group == "cd") %>% 
+  mutate(scrnaseq = scrnaseq*100) %>% 
+  dplyr::select(cor_var = facs,scrnaseq, Group) %>% 
+        mutate(cor_var = as.numeric(cor_var))
+
+write.csv2(df_save, "figures/source_data_Fig6D_cor.csv")
+```
+
+
+# AntiTNF response
+
+```{r}
+df_bl8
+```
+
+
+
+```{r}
+for(i in 5:6){
+  
+  pos <- position_jitter(width = 0.05, height = 0)
+  
+  plt <- df_bl8 %>% 
+    mutate(antitnf_response = if_else(Donor == "p10", "PR", antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(Donor == "p103", "FR", antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(antitnf_response == "NOA", "NM", antitnf_response)) %>% 
+    dplyr::select(Donor, cor_var = i, antitnf_response, Group, Batch) %>% 
+    mutate(cor_var = as.numeric(cor_var)) %>% 
+    dplyr::filter(Group == "cd" & !(Donor == "p51" & Batch == "Batch6")) %>% 
+    ggplot(aes(x = factor(antitnf_response, levels = c("NM","FR","PR")), y = cor_var)) +
+    geom_boxplot(outlier.shape = NA, aes(fill = antitnf_response), alpha = 0.4, width = 0.8) + 
+    geom_dotplot(binaxis = "y", stackdir = "center", dotsize = 0) + 
+    geom_jitter(position = pos, size = 2, aes(color = antitnf_response)) +
+    geom_text(aes(label = Donor),
+              position = pos,
+              vjust = -0.8,
+              size = 3) +
+    theme(plot.title = element_text(hjust = 0.5, size = 22),
+          axis.line = element_line(colour = "black"), 
+          axis.ticks = element_line(colour = "black"), 
+          axis.text.x = element_text(angle = 90, size = 10)) +
+    theme_classic() +
+    ggpubr::stat_compare_means(comparisons = list(c(2,3), c(1,3)), label = "p.format") +
+    ggtitle(colnames(df_bl8)[i])
+  
+  print(plt)
+}
+```
+
+
+
+
+```{r}
+for(i in 5:6){
+  plt <- df_bl8 %>% 
+    mutate(antitnf_response = if_else(Donor == "p10","PR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(Donor == "p103","FR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(antitnf_response == "NOA","NM",antitnf_response)) %>% 
+  dplyr::select(cor_var = i, antitnf_response, Group, Donor, Batch) %>% 
+  mutate(cor_var = as.numeric(cor_var)) %>% 
+  dplyr::filter(Group == "cd" & !(Donor == "p51" & Batch == "Batch6")) %>%  
+mutate(resp2 = case_when(antitnf_response == "NM" ~0 ,
+                         antitnf_response == "FR" ~ 1,
+                         antitnf_response == "PR" ~ 2
+                         )) %>% 
+  
+  ggplot(aes(x=factor(antitnf_response, levels = c("NM","FR","PR")), y=cor_var)) +
+#geom_smooth(method=lm, fullrange = TRUE, se = F) +
+ggpubr::stat_compare_means(comparisons = list(c(2,3)),label.y = 3) +
+geom_violin(alpha = 0.3, aes(fill = antitnf_response), scale = "width") + 
+#  geom_boxplot(outlier.shape = NA, aes(fill = antitnf_response)) +
+ 
+ggbeeswarm::geom_beeswarm(size = 1.5, aes(color = antitnf_response), cex = 2, 
+                shape = 16, corral = "random") +
+ stat_summary(fun = "median",
+               geom = "point", 
+              shape = 21,
+               size = 3,
+               aes(fill = antitnf_response), color = "black") +
+  ylab("Pct. from CD4") +
+  xlab("") +
+  ylim(c(0,5)) + 
+  theme_classic() +
+  theme(strip.background = element_blank(), 
+        panel.grid = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) + ggtitle(colnames(df_bl8[i])) +
+scale_color_manual(values = c("NM" = "grey88", "NOA" = "grey88", 
+                             "FR" = "green3", "PR" = "orange")) +
+scale_fill_manual(values = c("NM" = "grey88", "NOA" = "grey88", 
+                             "FR" = "green3", "PR" = "orange")) +
+ggtheme()
+  
+  print(plt)
+}
+```
+
+
+
+```{r}
+for(i in 5:6){
+  plt <- df_bl8 %>% 
+    mutate(antitnf_response = if_else(Donor == "p10","PR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(Donor == "p103","FR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(antitnf_response == "NOA","NM",antitnf_response)) %>% 
+  dplyr::select(cor_var = i, antitnf_response, Group, Donor, Batch) %>% 
+  mutate(cor_var = as.numeric(cor_var)) %>% 
+  dplyr::filter(Group == "cd" & !(Donor == "p51" & Batch == "Batch6")) %>%  
+mutate(resp2 = case_when(antitnf_response == "NM" ~0 ,
+                         antitnf_response == "FR" ~ 1,
+                         antitnf_response == "PR" ~ 2
+                         )) %>% 
+  
+  ggplot(aes(x=resp2, y=cor_var)) +
+  geom_boxplot(outlier.shape = NA, aes(fill = antitnf_response), alpha = 0.4, width = 0.8) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0) + 
+  geom_jitter(position=position_jitter(0.05), size = 2, aes(color = antitnf_response)) +
+      theme(plot.title = element_text(hjust = 0.5, size = 22),
+          axis.line = element_line(colour = "black"), 
+        axis.ticks = element_line(colour = "black"), 
+        axis.text.x = element_text(angle = 90, size = 10)
+        ) +
+      #ylim(c(0,1)) + 
+  theme_classic() +
+  ggpubr::stat_cor(alternative = "greater", label.y = 0.7) +
+  ggtheme() +
+    ggtitle(colnames(df_bl8)[i])
+  
+  print(plt)
+}
+
+```
+
+
+```{r}
+i = 6
+plt <- df_bl8 %>% 
+    mutate(antitnf_response = if_else(Donor == "p10","PR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(Donor == "p103","FR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(antitnf_response == "NOA","NM",antitnf_response)) %>% 
+  dplyr::select(cor_var = i, antitnf_response, Group, Donor, Batch) %>% 
+  mutate(cor_var = as.numeric(cor_var)) %>% 
+  dplyr::filter(Group == "cd" & !(Donor == "p51" & Batch == "Batch6")) %>%  
+mutate(resp2 = case_when(antitnf_response == "NM" ~0 ,
+                         antitnf_response == "FR" ~ 1,
+                         antitnf_response == "PR" ~ 2
+                         )) %>% 
+  
+  ggplot(aes(x=resp2, y=cor_var)) +
+  geom_violin(alpha = 0.3, aes(fill = antitnf_response), scale = "width") + 
+#  geom_boxplot(outlier.shape = NA, aes(fill = antitnf_response)) +
+ 
+ggbeeswarm::geom_beeswarm(size = 1.5, aes(color = antitnf_response), cex = 2, 
+                shape = 16, corral = "random") +
+  geom_smooth(method=lm, fullrange = TRUE, se = F) +
+ stat_summary(fun = "median",
+               geom = "point", 
+              shape = 21,
+               size = 3,
+               aes(fill = antitnf_response), color = "black") +
+  ylab("Pct. from CD4") +
+  xlab("") +
+  ylim(c(0,1)) + 
+  theme_classic() +
+  theme(strip.background = element_blank(), 
+        panel.grid = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) + ggtitle(colnames(df_bl8[i])) +
+  ggpubr::stat_cor(alternative = "greater", label.y = 0.7) +
+  
+scale_color_manual(values = c("NM" = "grey88", "NOA" = "grey88", 
+                             "FR" = "green3", "PR" = "orange")) +
+scale_fill_manual(values = c("NM" = "grey88", "NOA" = "grey88", 
+                             "FR" = "green3", "PR" = "orange")) +
+ggtheme() +
+    ggtitle(colnames(df_bl8)[i])
+
+plt
+```
+
+
+```{r}
+i = 6
+plt <- df_bl8 %>% 
+    mutate(antitnf_response = if_else(Donor == "p10","PR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(Donor == "p103","FR",antitnf_response)) %>% 
+    mutate(antitnf_response = if_else(antitnf_response == "NOA","NM",antitnf_response)) %>% 
+  dplyr::select(cor_var = i, antitnf_response, Group, Donor, Batch) %>% 
+  mutate(cor_var = as.numeric(cor_var)) %>% 
+  dplyr::filter(Group == "cd" & !(Donor == "p51" & Batch == "Batch6")) %>%  
+mutate(resp2 = case_when(antitnf_response == "NM" ~0 ,
+                         antitnf_response == "FR" ~ 1,
+                         antitnf_response == "PR" ~ 2
+                         )) %>% 
+  
+  ggplot(aes(x=resp2, y=cor_var)) +
+  geom_violin(alpha = 0.3, aes(fill = antitnf_response), scale = "width") + 
+#  geom_boxplot(outlier.shape = NA, aes(fill = antitnf_response)) +
+ 
+ggbeeswarm::geom_beeswarm(size = 1.5, aes(color = antitnf_response), cex = 2, 
+                shape = 16, corral = "random") +
+  geom_smooth(method=lm, fullrange = TRUE, se = F) +
+ stat_summary(fun = "median",
+               geom = "point", 
+              shape = 21,
+               size = 3,
+               aes(fill = antitnf_response), color = "black") +
+  ylab("Pct. from CD4") +
+  xlab("") +
+  ylim(c(0,1)) + 
+  theme_classic() +
+  theme(strip.background = element_blank(), 
+        panel.grid = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) + ggtitle(colnames(df_bl8[i])) +
+  ggpubr::stat_cor(alternative = "greater", label.y = 0.7) +
+  
+scale_color_manual(values = c("NM" = "grey88", "NOA" = "grey88", 
+                             "FR" = "green3", "PR" = "orange")) +
+scale_fill_manual(values = c("NM" = "grey88", "NOA" = "grey88", 
+                             "FR" = "green3", "PR" = "orange")) +
+ggtheme() +
+    ggtitle(colnames(df_bl8)[i])
+
+ggsave("../Analysis_260407/251205_antiTNF_linReg.svg", width = 12, height = 7.5, units = "cm")
+```
+
+## Update metadata change
+
+```{r}
+md_5p_new <- read_csv("../predict_5p_metadata_20260819.csv")
+
+md_response_join <- md_5p_new %>% dplyr::filter(timepoint == "T0") %>% 
+  group_by(participant_id, antitnf_response) %>% tally()
+
+
+df_test_response <- df_bl8
+
+df_test_response
+df_test_response <- df_test_response %>% mutate(participant_id = if_else(nchar(Donor) == 3, gsub(df_test_response$Donor, pattern = "^p", replacement = "001-0"), if_else(
+ nchar(Donor) == 4, gsub(df_test_response$Donor, pattern = "^p", replacement = "001-"), Donor))) 
+
+
+df_test_response <- df_test_response %>% left_join(md_response_join %>% dplyr::select(response = antitnf_response, participant_id))
+
+
+df_test_response %>% group_by(participant_id, antitnf_response, response) %>% tally() 
+```
+
+```{r}
+df_bl8
+```
+
+Source data
+
+```{r}
+i <- 6
+
+# Prepare source data
+df_plot <- df_test_response %>%
+  dplyr::select(cor_var = i, response, Group, Donor, Batch) %>%
+  dplyr::mutate(
+    cor_var = as.numeric(cor_var)
+  ) %>%
+  dplyr::filter(
+    Group == "cd",
+    !(Donor == "p51" & Batch == "Batch6")
+  ) %>%
+  dplyr::mutate(
+    resp2 = dplyr::case_when(
+      response %in% c("NM", "NOA") ~ 0,
+      response == "FR" ~ 1,
+      response == "PR" ~ 2
+    )
+  )
+
+# Save source data
+dir.create("figures/source_data", recursive = TRUE, showWarnings = FALSE)
+
+readr::write_csv2(
+  df_plot,
+  file.path(
+    "figures/source_data_Fig6E_response.csv")
+  )
+
+
+# Create plot
+plt <- df_plot %>%
+  ggplot(aes(x = resp2, y = cor_var)) +
+  geom_violin(
+    alpha = 0.3,
+    aes(fill = response),
+    scale = "width"
+  ) +
+  ggbeeswarm::geom_beeswarm(
+    size = 1.5,
+    aes(color = response),
+    cex = 2,
+    shape = 16,
+    corral = "random"
+  ) +
+  geom_smooth(method = lm, fullrange = TRUE, se = FALSE) +
+  stat_summary(
+    fun = "median",
+    geom = "point",
+    shape = 21,
+    size = 3,
+    aes(fill = response),
+    color = "black"
+  ) +
+  ylab("Pct. from CD4") +
+  xlab("") +
+  ylim(c(0, 1)) +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank()
+  ) +
+  ggpubr::stat_cor(
+    alternative = "greater",
+    label.y = 0.7,
+    method = "spearman"
+  ) +
+  scale_color_manual(
+    values = c(
+      "NM" = "grey88",
+      "NOA" = "grey88",
+      "FR" = "green3",
+      "PR" = "orange"
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "NM" = "grey88",
+      "NOA" = "grey88",
+      "FR" = "green3",
+      "PR" = "orange"
+    )
+  ) +
+  ggtheme() +
+  ggtitle(colnames(df_bl8)[i])
+
+plt
+```
+
+
+Save plot
+
+```{r}
+ggsave("../Analysis_260407/261105_antiTNF_linReg.svg", width = 9.5, height = 7.5, units = "cm")
+
+```
+
+
+# Activation cytokines
+
+```{r}
+df <- read_excel("260413_Activation_Results_IFNG_IL27.xlsx")
+
+df
+
+colnames(df)[1] <- "sample"
+
+
+df <-  df %>% separate(sample, into = c("Donor",NA, NA, "Activation",NA), sep = "_", remove = F)
+
+```
+```{r}
+plt_list <- list()
+
+for(i in c(5:8)){
+
+   df_filt <- df %>% 
+    dplyr::select(1:4,i)
+  colnames(df_filt) <- c(colnames(df_filt[c(1:4)]), "value")
+  df_filt$value <- as.numeric(df_filt$value)
+ 
+ 
+  
+plt <-  df_filt %>%  ggplot(aes(x = factor(Activation, levels = c("nothing","IFNg","IL27","IFNgIL27")),
+             y = value)) +
+  facet_wrap(~Group, ncol = 4) +
+  geom_boxplot(outlier.shape = NA, aes(fill = Activation), alpha = 0.2) +
+ geom_dotplot(binaxis='y', stackdir='center', dotsize=0) + 
+geom_line(aes(group = sample, alpha = 0.1), color = "grey88") +
+  geom_jitter(size = 3, position=position_jitter(width = 0.1, height = 0), 
+              aes(fill = Activation, color = Activation)) + theme_classic() +
+  #geom_line(aes(group = Donor), alpha = 0.3) + 
+  xlab("Group") +  
+  theme(plot.title = element_text(hjust = 0.5), 
+        strip.background = element_blank(),
+        axis.text = element_text(color = "black", size = 16),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size = 16)) + 
+   scale_shape_manual(values = c(21,22,24)) +
+  scale_color_manual(values = c("nothing" = "grey75","IFNg" = "#4d99cdff", 
+                                "IL27" = "#b37ab4ff", "IFNgIL27" = "#db6b69ff")) +
+  scale_fill_manual(values = c("nothing" = "grey75","IFNg" = "#4d99cdff", 
+                                "IL27" = "#b37ab4ff", "IFNgIL27" = "#db6b69ff")) +
+  
+  theme(plot.title = element_text(hjust = 0.5, size = 22),
+          axis.line = element_line(colour = "black"), 
+        axis.ticks = element_line(colour = "black"), 
+        axis.text.x = element_text(angle = 90)
+        ) +
+   plot_annotation(
+    title = paste(stringr::str_replace_all(string = colnames(df)[i], pattern = "/", replacement = "\n")) ,
+    theme = theme(plot.title = element_text(size = 8), 
+                  plot.subtitle = element_text(size = 8))) 
+
+ print(plt)
+ plt_list[[i-4]] <- plt
+ 
+}
+
+```
+
+```{r}
+cowplot::plot_grid(plotlist = plt_list, ncol = 4, labels = "")
+ggsave2("../../Raw_Data/250527_Activation_cytokines/260414_grid.png", width = 50, height = 10, units = "cm", limitsize = F)
+ggsave2("../../Raw_Data/250527_Activation_cytokines/260414_grid.svg", width = 50, height = 10, units = "cm", limitsize = F)
+getwd()
+```
+
